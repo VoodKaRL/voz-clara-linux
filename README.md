@@ -2,7 +2,7 @@
 
 Un mezclador sencillo para transformar tu micrófono y escucharte en directo en Linux. Una entrada física, un micrófono virtual y controles fáciles de mover.
 
-**Versión 0.2.0 · Experimental.** El procesamiento y la interfaz tienen pruebas automáticas. La captura, la compatibilidad con dispositivos y la latencia total todavía necesitan validación con hardware Linux.
+**Versión 0.2.1 · Experimental.** El procesamiento y la interfaz tienen pruebas automáticas. La captura, la compatibilidad con dispositivos y la latencia total todavía necesitan validación con hardware Linux.
 
 ## Qué puedes hacer
 
@@ -69,14 +69,16 @@ La primera ejecución instala las dependencias Python en `.venv`, dentro del pro
 
 ## Primer uso
 
-1. Selecciona el micrófono y la salida de auriculares.
+1. Selecciona **Escoger micrófono** en el panel izquierdo y **Escoger altavoz / auriculares** en el panel central.
 2. Empieza con **48000 Hz / 128 muestras**. Si hay cortes, aumenta a 256 o 512.
 3. Pulsa **Iniciar micrófono**.
 4. En la aplicación de llamadas o grabación, elige **Voz_Clara** como micrófono.
-5. Activa **Escuchar mi voz** para monitorizar la señal procesada. Usa auriculares.
+5. Pulsa **Oírme: OFF** para pasar a **Oírme: ON** y monitorizar la señal procesada. Es un botón, separado del selector de salida. Usa auriculares. Puedes cambiar de altavoz durante la escucha.
 6. Ajusta gate, compresor, panel de tono y volumen. El EQ de auriculares es independiente.
 
 Para cambiar dispositivos, Hz o búfer, detén y reinicia la captura. Al cerrar se guardan los controles y se retira el micrófono virtual; la app debe permanecer abierta mientras lo usas.
+
+Si antes aparecía «null», cierra la app y repite el instalador Bazzite para recibir la corrección. La app prueba la conexión al audio del host y, si hace falta y las utilidades están disponibles en el host, el puente de Distrobox. La misma ruta se usa para enumerar, capturar y reproducir. No presenta una salida ficticia como altavoz: si no ve hardware muestra «Sin micrófonos/altavoces disponibles» y el error correspondiente. Comprueba también que los dispositivos aparezcan en Ajustes → Sonido de GNOME.
 
 ## Actualizar
 

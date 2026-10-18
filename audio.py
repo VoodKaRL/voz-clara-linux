@@ -4,7 +4,98 @@ import subprocess
 import threading
 import queue
 import time
+import os
+import stat
+from pathlib import Path
 from dsp import Processor, Headphones
+
+_audio_env = None
+_audio_prefix = []
+
+
+def in_container():
+    return Path('/run/.containerenv').exists() or Path('/.dockerenv').exists()
+
+
+def audio_environment():
+    return dict(_audio_env if _audio_env is not None else os.environ)
+
+
+def audio_command(program):
+    return [*_audio_prefix, program]
+
+
+def device_list(records, kind):
+    result = []
+    for device in records:
+        name = device.get('name')
+        if not isinstance(name, str) or not name or name.lower() in ('null', 'none'):
+            continue
+        if name.startswith('voz_clara') or name in ('auto_null', 'auto_null.monitor'):
+            continue
+        properties = device.get('properties') or {}
+        if device.get('driver') == 'module-null-sink.c' or properties.get('factory.name') == 'support.null-audio-sink':
+            continue
+        if kind == 'sources' and (name.endswith('.monitor') or
+                device.get('monitor_of_sink') not in (None, 4294967295, '4294967295')):
+            continue
+        label = device.get('description') or properties.get('device.description') or properties.get('node.description')
+        if not isinstance(label, str) or label.strip().lower() in ('', 'null', '(null)', 'none'):
+            label = name
+        result.append((name, label))
+    return result
+
+
+def configure_audio():
+    """Prefer the host socket in Distrobox; never silently accept a dummy server."""
+    global _audio_env, _audio_prefix
+    base = dict(os.environ)
+    candidates = []
+    if in_container() and hasattr(os, 'getuid'):
+        uid = os.getuid()
+        paths = [f'/run/host/run/user/{uid}/pulse/native',
+                 f'/run/user/{uid}/pulse/native']
+        runtime = base.get('XDG_RUNTIME_DIR')
+        if runtime:
+            paths.append(str(Path(runtime) / 'pulse/native'))
+        for path in dict.fromkeys(paths):
+            try:
+                if stat.S_ISSOCK(Path(path).stat().st_mode):
+                    candidates.append((dict(base, PULSE_SERVER='unix:'+path), []))
+            except OSError:
+                pass
+    candidates.append((base, []))
+    # If the host socket isn't mounted, use Distrobox's host bridge for ALL
+    # audio commands, including capture/playback; do not mix two servers.
+    if in_container() and shutil.which('distrobox-host-exec'):
+        try:
+            subprocess.check_output(['distrobox-host-exec', 'sh', '-c',
+                'command -v pactl >/dev/null && command -v parec >/dev/null && command -v pacat >/dev/null'],
+                stderr=subprocess.PIPE, timeout=5)
+            candidates.append((base, ['distrobox-host-exec']))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    errors = []
+    for env, prefix in candidates:
+        try:
+            sources = json.loads(subprocess.check_output([*prefix, 'pactl', '-f', 'json', 'list', 'sources'],
+                text=True, stderr=subprocess.PIPE, timeout=5, env=env))
+            sinks = json.loads(subprocess.check_output([*prefix, 'pactl', '-f', 'json', 'list', 'sinks'],
+                text=True, stderr=subprocess.PIPE, timeout=5, env=env))
+            if not device_list(sources, 'sources') and not device_list(sinks, 'sinks'):
+                errors.append('El servidor solo ofrece dispositivos ficticios (null) o ningún dispositivo.')
+                continue
+            _audio_env = env
+            _audio_prefix = prefix
+            return
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            detail = getattr(exc, 'stderr', None) or str(exc)
+            errors.append(str(detail).strip())
+    _audio_env = None
+    _audio_prefix = []
+    raise RuntimeError('No se ven los dispositivos de audio del sistema. '
+        'En Bazzite, cierra la app y repite el instalador actualizado. '
+        + (errors[-1] if errors else 'No se encontró el servidor de audio.'))
 
 
 def stream_args(rate, frames):
@@ -34,14 +125,12 @@ def write_all(stream, data):
 
 
 def pactl(*args):
-    return subprocess.check_output(['pactl', *map(str, args)], text=True, stderr=subprocess.PIPE, timeout=5).strip()
+    return subprocess.check_output([*audio_command('pactl'), *map(str, args)], text=True, stderr=subprocess.PIPE,
+        timeout=5, env=audio_environment()).strip()
 
 
 def devices(kind):
-    return [(d['name'], d.get('description', d['name']))
-            for d in json.loads(pactl('-f', 'json', 'list', kind))
-            if not d['name'].startswith('voz_clara') and
-            (kind != 'sources' or not d['name'].endswith('.monitor'))]
+    return device_list(json.loads(pactl('-f', 'json', 'list', kind)), kind)
 
 
 class Engine:
@@ -79,9 +168,9 @@ class Engine:
             self.rate, self.frames = rate, frames
             self.dropped = 0
             common = stream_args(rate, frames)
-            reader = subprocess.Popen(['parec', f'--device={source}', *common], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+            reader = subprocess.Popen([*audio_command('parec'), f'--device={source}', *common], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0, env=audio_environment())
             self.processes.append(reader)
-            writer = subprocess.Popen(['pacat', '--playback', '--device=voz_clara_bus', *common], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+            writer = subprocess.Popen([*audio_command('pacat'), '--playback', '--device=voz_clara_bus', *common], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0, env=audio_environment())
             self.processes.append(writer)
             self.processor = Processor(rate)
             self.headphones = Headphones(rate)
@@ -126,11 +215,13 @@ class Engine:
             self.monitor_thread.join(timeout=3)
         self.monitor_process = self.monitor_thread = None
         if enabled:
+            if not sink or sink.lower() in ('null', 'none', 'auto_null'):
+                raise RuntimeError('Selecciona un altavoz o unos auriculares disponibles.')
             self.monitor_error = ''
             target = queue.Queue(maxsize=2)
-            process = subprocess.Popen(['pacat', '--playback', f'--device={sink}',
+            process = subprocess.Popen([*audio_command('pacat'), '--playback', f'--device={sink}',
                 *stream_args(self.rate, self.frames)], stdin=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, bufsize=0)
+                stderr=subprocess.DEVNULL, bufsize=0, env=audio_environment())
             self.monitor_process = process
             self.monitor_queue = target
             self.monitor_thread = threading.Thread(target=self.run_monitor, args=(process, target), daemon=True)

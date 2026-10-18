@@ -62,7 +62,7 @@ if [[ ! -x .venv-bazzite/bin/python ]]; then
 fi
 .venv-bazzite/bin/python -m pip install -r requirements.txt
 .venv-bazzite/bin/python -c 'from PySide6.QtWidgets import QApplication; import numpy, scipy'
-if ! pactl info >/dev/null 2>&1; then
+if ! .venv-bazzite/bin/python -c 'from audio import configure_audio; configure_audio()'; then
     echo 'No se pudo conectar con el audio de Bazzite. No se creará el acceso hasta que esté disponible.' >&2
     exit 1
 fi

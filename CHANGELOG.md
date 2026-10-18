@@ -1,5 +1,14 @@
 # Cambios
 
+## 0.2.1 — Corrección de dispositivos
+
+- Selectores visibles de micrófono y altavoz/auriculares en sus paneles.
+- Oírme: un único botón ON/OFF; cambio de salida durante la escucha.
+- Los nombres vacíos o null se sustituyen por el identificador real.
+- Se excluyen monitores, el bus interno y salidas ficticias auto_null.
+- En contenedores se prueban los sockets de audio del host y se comparte la conexión entre captura, salida virtual y auriculares.
+- Si no hay dispositivos reales, la app muestra un error y no permite iniciar con null.
+
 ## Instalador Bazzite
 
 - Instalación y actualización con un solo comando en Bazzite GNOME/KDE.

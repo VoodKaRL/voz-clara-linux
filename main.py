@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt, QTimer, QSettings, QPointF
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QComboBox, QPushButton, QSlider, QGroupBox, QProgressBar, QMessageBox)
-from audio import Engine, devices
+from audio import Engine, devices, configure_audio
 
 
 class TonePad(QWidget):
@@ -63,9 +63,12 @@ class Window(QWidget):
         root.addWidget(QLabel('Un micrófono. Tu voz, a tu manera.'))
         row = QHBoxLayout()
         root.addLayout(row)
-        strip = QGroupBox('STEREO INPUT · Una entrada')
+        strip = QGroupBox('MICRÓFONO · Entrada')
         left = QVBoxLayout(strip)
+        left.addWidget(QLabel('Escoger micrófono'))
         self.source = QComboBox()
+        self.source.setMinimumContentsLength(16)
+        self.source.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         left.addWidget(self.source)
         left.addWidget(QLabel('PANEL DE VOZ'))
         self.pad = TonePad(self.sync)
@@ -118,6 +121,17 @@ class Window(QWidget):
         row.addWidget(strip, 3)
         headphones_box = QGroupBox('AURICULARES · Escucha de tu voz')
         hp = QVBoxLayout(headphones_box)
+        hp.addWidget(QLabel('Escoger altavoz / auriculares'))
+        self.sink = QComboBox()
+        self.sink.setMinimumContentsLength(16)
+        self.sink.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.sink.currentIndexChanged.connect(self.output_changed)
+        hp.addWidget(self.sink)
+        self.listen = QPushButton('Oírme: OFF')
+        self.listen.setCheckable(True)
+        self.listen.setEnabled(False)
+        self.listen.toggled.connect(self.monitor)
+        hp.addWidget(self.listen)
         hp.addWidget(QLabel('ECUALIZADOR · ±12 dB'))
         eq_row = QHBoxLayout()
         self.eq = []
@@ -189,14 +203,6 @@ class Window(QWidget):
         self.runtime_label = QLabel('Procesamiento: detenido')
         self.runtime_label.setWordWrap(True)
         form.addWidget(self.runtime_label)
-        form.addWidget(QLabel('Salida para escucharte'))
-        self.sink = QComboBox()
-        form.addWidget(self.sink)
-        self.listen = QPushButton('Escuchar mi voz')
-        self.listen.setCheckable(True)
-        self.listen.setEnabled(False)
-        self.listen.toggled.connect(self.monitor)
-        form.addWidget(self.listen)
         tip = QLabel('Usa auriculares para evitar acoples. La escucha incluye gate, tono y ganancia.')
         tip.setWordWrap(True)
         form.addWidget(tip)
@@ -224,18 +230,32 @@ class Window(QWidget):
         self.timer.start(60)
 
     def load_devices(self):
+        previous = {key: combo.currentData() or self.settings.value(key, '')
+            for combo, key in ((self.source, 'source'), (self.sink, 'sink'))}
+        for combo in (self.source, self.sink):
+            combo.blockSignals(True)
+            combo.clear()
         try:
+            configure_audio()
             for combo, kind, key in ((self.source, 'sources', 'source'), (self.sink, 'sinks', 'sink')):
-                selected = combo.currentData() or self.settings.value(key, '')
-                combo.clear()
                 for name, description in devices(kind):
                     combo.addItem(description, name)
-                idx = combo.findData(selected)
+                idx = combo.findData(previous[key])
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
-            self.status.setText('Selecciona tu micrófono y pulsa Iniciar.')
+            self.status.setText('Escoge micrófono y altavoz. Pulsa Iniciar y activa Oírme si quieres escucharte.'
+                if self.source.count() and self.sink.count() else
+                'Faltan dispositivos: revisa el micrófono y la salida en los ajustes de sonido de GNOME y pulsa Actualizar dispositivos.')
         except Exception as exc:
             self.status.setText(f'No se pudo consultar el audio: {exc}')
+        finally:
+            for combo, label in ((self.source, 'Sin micrófonos disponibles'), (self.sink, 'Sin altavoces disponibles')):
+                if not combo.count():
+                    combo.addItem(label, None)
+                    combo.model().item(0).setEnabled(False)
+                combo.blockSignals(False)
+            self.start.setEnabled(bool(self.source.currentData()))
+            self.listen.setEnabled(self.start.isChecked() and bool(self.sink.currentData()))
 
     def sync(self):
         p = self.engine.processor
@@ -281,18 +301,24 @@ class Window(QWidget):
             self.engine.stop()
             self.status.setText('Micrófono detenido')
         self.start.setText('Detener micrófono' if enabled else 'Iniciar micrófono')
-        self.listen.setEnabled(enabled and self.sink.count() > 0)
-        for widget in (self.source, self.sink, self.rate, self.buffer, self.refresh):
+        self.listen.setEnabled(enabled and bool(self.sink.currentData()))
+        for widget in (self.source, self.rate, self.buffer, self.refresh):
             widget.setEnabled(not enabled)
 
     def monitor(self, enabled):
         try:
             self.engine.monitor(enabled, self.sink.currentData())
+            self.listen.setText('Oírme: ON' if enabled else 'Oírme: OFF')
         except Exception as exc:
             self.listen.blockSignals(True)
             self.listen.setChecked(False)
+            self.listen.setText('Oírme: OFF')
             self.listen.blockSignals(False)
             QMessageBox.warning(self, 'Escucha', str(exc))
+
+    def output_changed(self):
+        if hasattr(self, 'listen') and self.listen.isChecked():
+            self.monitor(True)
 
     def tick(self):
         self.meter.setValue(int(max(0, self.engine.processor.output_db+90)) if self.start.isChecked() else 0)
