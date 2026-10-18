@@ -73,7 +73,8 @@ def configure_audio():
     if in_container() and shutil.which('distrobox-host-exec'):
         try:
             subprocess.check_output(['distrobox-host-exec', 'sh', '-c',
-                'command -v pactl >/dev/null && command -v parec >/dev/null && command -v pacat >/dev/null'],
+                'command -v pactl >/dev/null && command -v parec >/dev/null && command -v pacat >/dev/null && '
+                'python3 -c "import ctypes; ctypes.CDLL(\'libpulse.so.0\')"'],
                 stderr=subprocess.PIPE, timeout=5)
             candidates.append((base, ['distrobox-host-exec']))
         except (OSError, subprocess.SubprocessError):
@@ -139,18 +140,6 @@ def devices(kind):
 MIC_BUS = 'voz_clara_mic_bus'
 MIC_SOURCE = 'voz_clara_mic'
 SPEAKER_SINK = 'voz_clara_altavoces'
-
-
-def pinned_args(rate, frames, device, role, session):
-    return [f'--device={device}', *stream_args(rate, frames),
-            f'--stream-name=Voz Clara {role}',
-            f'--property=target.object={device}',
-            '--property=node.dont-move=true',
-            '--property=node.dont-reconnect=true',
-            '--property=node.dont-fallback=true',
-            '--property=media.role=filter',
-            f'--property=voz_clara.role={role}',
-            f'--property=voz_clara.session={session}']
 
 
 def validate_device(name, kind):

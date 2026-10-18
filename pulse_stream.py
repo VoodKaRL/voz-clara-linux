@@ -91,7 +91,9 @@ def main(mode, device, rate, frames, role, session):
             raise RuntimeError('No se pudo crear el flujo de audio.')
         stream_cb(stream, changed, None)
         stream_data_cb(stream, ready, None)
-        attrs = BufferAttr(0xffffffff, frames*8, 0, max(32, frames//2)*8, frames*8)
+        # Let PulseAudio prebuffer again after an underrun. prebuf=0 lets the
+        # hardware clock overtake the write cursor and can leave playback silent.
+        attrs = BufferAttr(0xffffffff, frames*8, 0xffffffff, max(32, frames//2)*8, frames*8)
         if mode == 'record':
             check(record(stream, device.encode(), c.byref(attrs), STREAM_FLAGS))
         else:
