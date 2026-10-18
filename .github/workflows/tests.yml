@@ -22,4 +22,6 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: python -m unittest discover -s tests -v
       - name: Comprobar lanzador Bash
-        run: bash -n iniciar.sh
+        run: |
+          bash -n iniciar.sh
+          bash -n instalar-bazzite.sh
