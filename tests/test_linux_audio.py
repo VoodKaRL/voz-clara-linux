@@ -75,13 +75,30 @@ class LinuxAudioTests(unittest.TestCase):
     def setUp(self):
         self.engine = audio.Engine()
         self.addCleanup(self.engine.stop)
+        def logged_open(program, device, role):
+            log = (self.runtime / (role+'.log')).open('wb')
+            self.addCleanup(log.close)
+            options = dict(stderr=log, bufsize=0, env=self.env)
+            options['stdout' if program == 'parec' else 'stdin'] = subprocess.PIPE
+            return subprocess.Popen([program, *audio.pinned_args(
+                self.engine.rate, self.engine.frames, device, role, self.engine.session)], **options)
+        self.engine.open_audio = logged_open
         self.engine.start('test_mic', 'test_speaker', 48000, 256)
         self.engine.processor.gate_db = -80
         self.engine.headphones.volume_db = 0
 
+    def tearDown(self):
+        print('Engine error:', self.engine.error, flush=True)
+        for path in self.runtime.glob('*.log'):
+            print(path.name, path.read_text(errors='replace'), flush=True)
+        for kind in ('sources', 'sinks', 'source-outputs', 'sink-inputs'):
+            print(kind, audio.pactl('-f', 'json', 'list', kind), flush=True)
+
     def tone(self, sink, frequency):
+        log = (self.runtime / ('tone-'+sink+'.log')).open('wb')
+        self.addCleanup(log.close)
         process = subprocess.Popen(['pacat', '--playback', f'--device={sink}',
-            *audio.stream_args(48000, 256)], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            *audio.stream_args(48000, 256)], stdin=subprocess.PIPE, stderr=log,
             env=self.env, bufsize=0)
         def feed():
             wave = np.repeat((.02*np.sin(2*np.pi*frequency*np.arange(4800)/48000))[:, None], 2, axis=1).astype('<f4')
