@@ -80,8 +80,7 @@ class LinuxAudioTests(unittest.TestCase):
             self.addCleanup(log.close)
             options = dict(stderr=log, bufsize=0, env=self.env)
             options['stdout' if program == 'parec' else 'stdin'] = subprocess.PIPE
-            return subprocess.Popen([program, *audio.pinned_args(
-                self.engine.rate, self.engine.frames, device, role, self.engine.session)], **options)
+            return subprocess.Popen(self.engine.stream_command(program, device, role), **options)
         self.engine.open_audio = logged_open
         self.engine.start('test_mic', 'test_speaker', 48000, 256)
         self.engine.processor.gate_db = -80
