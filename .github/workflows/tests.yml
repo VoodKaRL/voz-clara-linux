@@ -29,6 +29,7 @@ jobs:
   audio-routing:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         backend: [pulseaudio, pipewire]
     steps:
