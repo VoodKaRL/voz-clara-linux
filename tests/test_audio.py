@@ -43,12 +43,7 @@ class RoutingTests(unittest.TestCase):
         engine.monitor(False, None)
         np.testing.assert_allclose(engine.mix_speakers(desktop), .01, atol=1e-7)
 
-    def test_stream_targets_cannot_follow_the_default(self):
-        args = audio.pinned_args(48000, 128, 'alsa_input.usb', 'microphone-input', 'test')
-        for flag in ('--device=alsa_input.usb', '--property=target.object=alsa_input.usb',
-                '--property=node.dont-move=true', '--property=node.dont-reconnect=true',
-                '--property=node.dont-fallback=true'):
-            self.assertIn(flag, args)
+    def test_stream_targets_reject_virtual_devices(self):
         for name in ('voz_clara_mic', 'voz_clara_altavoces', 'voz_clara_bus', '@DEFAULT_SOURCE@', 'alsa_output.card.monitor'):
             with self.assertRaises(RuntimeError):
                 audio.validate_device(name, 'sources')

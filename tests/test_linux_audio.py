@@ -137,6 +137,10 @@ class LinuxAudioTests(unittest.TestCase):
         time.sleep(.4)
         neutral = float(np.std(self.record('test_speaker.monitor')))
         self.assertGreater(neutral, .005, 'Oírme OFF no debe silenciar el escritorio')
+        # Repeat after all streams are fully connected, not just during startup.
+        audio.pactl('set-default-source', 'test_mic')
+        audio.pactl('set-default-sink', 'test_speaker')
+        self.engine.use_as_defaults()
         self.engine.headphones.gains = (0, 0, 12, 0, 0)
         boosted = float(np.std(self.record('test_speaker.monitor')))
         self.assertGreater(boosted, neutral*2, 'El EQ debe afectar el audio del sistema')
