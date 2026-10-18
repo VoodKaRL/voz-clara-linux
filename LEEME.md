@@ -4,6 +4,8 @@ Versión 0.2 en código fuente. Una sola entrada física mono/estéreo, gate con
 
 ## Instalación
 
+**Bazzite GNOME/KDE:** usa el comando único de la sección Bazzite del [README](README.md). Prepara todas las dependencias en Distrobox y crea un acceso en el menú. No uses las instrucciones de `dnf` del host Fedora tradicional. Para actualizar, repite el instalador con la app cerrada.
+
 Requiere Linux de escritorio, Python 3.10 o posterior y PipeWire con pipewire-pulse o PulseAudio. No reemplaces tu servidor de audio.
 
 Ubuntu / Debian / Mint:

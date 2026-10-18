@@ -1,5 +1,12 @@
 # Cambios
 
+## Instalador Bazzite
+
+- Instalación y actualización con un solo comando en Bazzite GNOME/KDE.
+- Dependencias en Distrobox y acceso desde el menú de aplicaciones.
+- Comprobación de conexión al audio antes de crear el acceso.
+- Ruta preparada; pendiente validar instalación y audio en Bazzite real.
+
 ## 0.2.0 — 2026-10-18
 
 - Una entrada física y un micrófono virtual para Linux.

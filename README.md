@@ -19,6 +19,24 @@ El EQ y volumen de auriculares solo afectan a tu escucha de la voz; no al audio 
 
 ## Instalar en Linux
 
+### Bazzite GNOME o KDE: un solo comando
+
+En la terminal de Bazzite, con tu usuario normal y sin `sudo`, pega esta única línea:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/VoodKaRL/voz-clara-linux/main/instalar-bazzite.sh | bash
+```
+
+El instalador descarga el proyecto, prepara las dependencias de sistema y Python en un contenedor Distrobox dedicado y crea **Voz Clara Linux** en el menú de aplicaciones. La primera vez necesita internet, espacio para el contenedor y varios minutos. Después lo abres desde el menú, sin terminal. Para actualizar, cierra la app y repite el mismo comando; conserva los ajustes.
+
+Bazzite está basado en Fedora, pero utiliza un sistema base atómico: no sigas las instrucciones `sudo dnf install` de Fedora tradicional sobre el host. El instalador usa una imagen Ubuntu 24.04 *dentro de Distrobox* para sus dependencias; tu sistema sigue siendo Bazzite. Distrobox integra la interfaz gráfica y el audio del host. No se instala un servidor de audio adicional ni se requiere reiniciar. Requiere Distrobox y Podman disponibles en Bazzite.
+
+Esta ruta de instalación está preparada, pero aún necesita una prueba completa en un equipo Bazzite real. Si la conexión al audio falla, el instalador muestra el error. No garantiza una latencia específica por usar el contenedor.
+
+Referencias: [instalación de software en Bazzite](https://docs.bazzite.gg/Installing_and_Managing_Software/software-intro/), [integración de Distrobox](https://distrobox.it/).
+
+### Otras distribuciones: instalación manual
+
 Necesitas Python 3.10 o posterior, Git, y un escritorio con **PipeWire + pipewire-pulse** o **PulseAudio**. Conserva el servidor de audio que ya utiliza tu distribución.
 
 Ubuntu / Debian / Linux Mint:
@@ -61,6 +79,8 @@ La primera ejecución instala las dependencias Python en `.venv`, dentro del pro
 Para cambiar dispositivos, Hz o búfer, detén y reinicia la captura. Al cerrar se guardan los controles y se retira el micrófono virtual; la app debe permanecer abierta mientras lo usas.
 
 ## Actualizar
+
+**Bazzite:** repite el comando único de instalación anterior con la app cerrada. Las instrucciones siguientes son para la instalación manual de otras distribuciones.
 
 Si lo instalaste con Git, cierra la app y ejecuta desde la carpeta del proyecto:
 
