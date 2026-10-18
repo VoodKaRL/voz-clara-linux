@@ -6,8 +6,10 @@ import queue
 import time
 import os
 import stat
+import uuid
 from pathlib import Path
-from dsp import Processor, Headphones
+from dsp import Processor, Headphones, MicrophoneOutput
+from noise import NoiseSuppressor
 
 _audio_env = None
 _audio_prefix = []
@@ -133,49 +135,129 @@ def devices(kind):
     return device_list(json.loads(pactl('-f', 'json', 'list', kind)), kind)
 
 
+MIC_BUS = 'voz_clara_mic_bus'
+MIC_SOURCE = 'voz_clara_mic'
+SPEAKER_SINK = 'voz_clara_altavoces'
+
+
+def pinned_args(rate, frames, device, role, session):
+    return [f'--device={device}', *stream_args(rate, frames),
+            f'--stream-name=Voz Clara {role}',
+            f'--property=target.object={device}',
+            '--property=node.dont-move=true',
+            '--property=node.dont-reconnect=true',
+            '--property=node.dont-fallback=true',
+            '--property=media.role=filter',
+            f'--property=voz_clara.role={role}',
+            f'--property=voz_clara.session={session}']
+
+
+def validate_device(name, kind):
+    if not name or name.startswith('voz_clara') or name.startswith('@') or name.lower() in ('null', 'none', 'auto_null'):
+        raise RuntimeError('Escoge un dispositivo físico, no un dispositivo de Voz Clara ni el predeterminado.')
+    if kind == 'sources' and name.endswith('.monitor'):
+        raise RuntimeError('La entrada debe ser un micrófono, no un monitor de altavoz.')
+    records = json.loads(pactl('-f', 'json', 'list', kind))
+    if not any(d.get('name') == name for d in records):
+        raise RuntimeError('El dispositivo elegido se desconectó. Actualiza los dispositivos.')
+
+
+def routing_error(sources, sinks, captures, playbacks, expected, session):
+    """Fail closed if a session manager moves one of our internal streams."""
+    for streams, devices_, field in ((captures, sources, 'source'), (playbacks, sinks, 'sink')):
+        names = {str(d['index']): d['name'] for d in devices_}
+        for stream in streams:
+            props = stream.get('properties') or {}
+            if props.get('voz_clara.session') != session:
+                continue
+            role = props.get('voz_clara.role')
+            if role in expected and names.get(str(stream.get(field))) != expected[role]:
+                return f'La ruta {role} cambió de dispositivo. Audio detenido para evitar un bucle.'
+    return ''
+
+
 class Engine:
     def __init__(self):
         self.modules = []
         self.processes = []
-        self.monitor_process = None
-        self.monitor_thread = None
+        self.speaker_processes = []
         self.monitor_queue = None
         self.monitor_error = ''
         self.dropped = 0
         self.processing_ms = 0
-        self.thread = None
+        self.thread = self.speaker_thread = self.guard_thread = None
         self.stopping = False
         self.error = ''
         self.processor = Processor(48000)
+        self.safety = MicrophoneOutput(48000)
+        self.noise = NoiseSuppressor(48000)
         self.headphones = Headphones(48000)
+        self.fault = threading.Event()
+        self.guard_stop = threading.Event()
+        self.speaker_stop = threading.Event()
+        self.expected = {}
+        self.previous_defaults = {}
+        self.output_generation = 0
+        self.output_switching = False
+        self.session = uuid.uuid4().hex
 
-    def start(self, source, rate, frames):
+    def open_audio(self, program, device, role):
+        options = dict(stderr=subprocess.DEVNULL, bufsize=0, env=audio_environment())
+        if program == 'parec':
+            options['stdout'] = subprocess.PIPE
+        else:
+            options['stdin'] = subprocess.PIPE
+        return subprocess.Popen([*audio_command(program),
+            *pinned_args(self.rate, self.frames, device, role, self.session)], **options)
+
+    def start(self, source, sink, rate, frames, noise_enabled=False, noise_strength=70):
         for command in ('pactl', 'parec', 'pacat'):
             if not shutil.which(command):
-                raise RuntimeError(f'Falta {command}. Instala pulseaudio-utils (o libpulse en Arch).')
+                raise RuntimeError(f'Falta {command}. Repite el instalador de Voz Clara.')
         self.stop()
+        validate_device(source, 'sources')
+        validate_device(sink, 'sinks')
+        if any(d['name'].startswith('voz_clara') for d in json.loads(pactl('-f', 'json', 'list', 'sinks'))):
+            raise RuntimeError('Hay otra instancia o módulos antiguos de Voz Clara. Cierra la app anterior antes de iniciar.')
         self.error = ''
         self.stopping = False
+        self.fault.clear()
+        self.guard_stop.clear()
+        self.source, self.sink = source, sink
+        self.rate, self.frames = rate, frames
+        self.dropped = 0
+        self.processor = Processor(rate)
+        self.safety = MicrophoneOutput(rate)
+        self.noise = NoiseSuppressor(rate)
+        self.noise.strength = noise_strength
+        self.noise.set_enabled(noise_enabled)
+        self.headphones = Headphones(rate)
+        self.expected = {'microphone-input': source, 'microphone-output': MIC_BUS,
+                         'desktop-input': SPEAKER_SINK+'.monitor', 'hardware-output': sink}
+        for kind in ('source', 'sink'):
+            try:
+                self.previous_defaults[kind] = pactl('get-default-'+kind)
+            except Exception:
+                pass
         try:
-            if any(d['name'] == 'voz_clara_bus' for d in json.loads(pactl('-f', 'json', 'list', 'sinks'))):
-                raise RuntimeError('Ya existe otra instancia de Voz Clara. Ciérrala antes de iniciar.')
-            self.modules.append(pactl('load-module', 'module-null-sink', 'sink_name=voz_clara_bus',
-                                      f'rate={rate}', 'channels=2', 'channel_map=front-left,front-right',
-                                      'sink_properties=device.description=Voz_Clara_Bus'))
-            self.modules.append(pactl('load-module', 'module-remap-source', 'master=voz_clara_bus.monitor',
-                                      'source_name=voz_clara_mic', 'channels=2', 'channel_map=front-left,front-right',
-                                      'source_properties=device.description=Voz_Clara'))
-            self.rate, self.frames = rate, frames
-            self.dropped = 0
-            common = stream_args(rate, frames)
-            reader = subprocess.Popen([*audio_command('parec'), f'--device={source}', *common], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0, env=audio_environment())
+            self.modules.append(pactl('load-module', 'module-null-sink', f'sink_name={MIC_BUS}',
+                f'rate={rate}', 'channels=2', 'channel_map=front-left,front-right',
+                'sink_properties="device.description=Voz_Clara_Interno_NO_SELECCIONAR device.class=abstract node.hidden=true priority.session=0"'))
+            self.modules.append(pactl('load-module', 'module-remap-source', f'master={MIC_BUS}.monitor',
+                f'source_name={MIC_SOURCE}', 'channels=2', 'channel_map=front-left,front-right',
+                'source_properties=device.description=Voz_Clara_Microfono'))
+            self.modules.append(pactl('load-module', 'module-null-sink', f'sink_name={SPEAKER_SINK}',
+                f'rate={rate}', 'channels=2', 'channel_map=front-left,front-right',
+                'sink_properties=device.description=Voz_Clara_Altavoces'))
+            reader = self.open_audio('parec', source, 'microphone-input')
             self.processes.append(reader)
-            writer = subprocess.Popen([*audio_command('pacat'), '--playback', '--device=voz_clara_bus', *common], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0, env=audio_environment())
+            writer = self.open_audio('pacat', MIC_BUS, 'microphone-output')
             self.processes.append(writer)
-            self.processor = Processor(rate)
-            self.headphones = Headphones(rate)
             self.thread = threading.Thread(target=self.run, args=(reader, writer, frames), daemon=True)
             self.thread.start()
+            self.set_output(sink)
+            self.guard_thread = threading.Thread(target=self.guard_routes, daemon=True)
+            self.guard_thread.start()
         except Exception:
             self.stop()
             raise
@@ -186,7 +268,10 @@ class Engine:
             while not self.stopping:
                 data = read_exact(reader.stdout, frames*8)
                 started = time.perf_counter()
-                out = self.processor.process(np.frombuffer(data, dtype='<f4').reshape(-1, 2))
+                clean = self.noise.process(np.frombuffer(data, dtype='<f4').reshape(-1, 2))
+                out = self.safety.process(self.processor.process(clean))
+                if self.fault.is_set():
+                    out.fill(0)
                 self.processing_ms = (time.perf_counter()-started)*1000
                 write_all(writer.stdin, out.tobytes())
                 target = self.monitor_queue
@@ -205,39 +290,101 @@ class Engine:
                             pass
         except Exception as exc:
             if not self.stopping:
+                self.fault.set()
                 self.error = str(exc)
 
-    def monitor(self, enabled, sink):
-        self.monitor_queue = None
-        if self.monitor_process:
-            self.terminate(self.monitor_process)
-        if self.monitor_thread:
-            self.monitor_thread.join(timeout=3)
-        self.monitor_process = self.monitor_thread = None
-        if enabled:
-            if not sink or sink.lower() in ('null', 'none', 'auto_null'):
-                raise RuntimeError('Selecciona un altavoz o unos auriculares disponibles.')
-            self.monitor_error = ''
-            target = queue.Queue(maxsize=2)
-            process = subprocess.Popen([*audio_command('pacat'), '--playback', f'--device={sink}',
-                *stream_args(self.rate, self.frames)], stdin=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, bufsize=0, env=audio_environment())
-            self.monitor_process = process
-            self.monitor_queue = target
-            self.monitor_thread = threading.Thread(target=self.run_monitor, args=(process, target), daemon=True)
-            self.monitor_thread.start()
-
-    def run_monitor(self, process, target):
+    def set_output(self, sink):
+        validate_device(sink, 'sinks')
+        self.output_switching = True
+        self.output_generation += 1
+        self.stop_speakers()
+        self.speaker_stop = threading.Event()
         try:
-            while self.monitor_queue is target and not self.stopping:
-                try:
-                    out = target.get(timeout=.05)
-                except queue.Empty:
-                    continue
-                write_all(process.stdin, self.headphones.process(out).tobytes())
+            reader = self.open_audio('parec', SPEAKER_SINK+'.monitor', 'desktop-input')
+            self.speaker_processes.append(reader)
+            writer = self.open_audio('pacat', sink, 'hardware-output')
+            self.speaker_processes.append(writer)
+            self.sink = sink
+            self.expected['hardware-output'] = sink
+            self.speaker_thread = threading.Thread(target=self.run_speakers,
+                args=(reader, writer, self.frames, self.speaker_stop), daemon=True)
+            self.speaker_thread.start()
+        except Exception:
+            self.stop_speakers()
+            self.fault.set()
+            self.error = 'No se pudo abrir el altavoz físico elegido.'
+            raise
+        finally:
+            self.output_switching = False
+
+    def mix_speakers(self, desktop):
+        import numpy as np
+        mixed = np.array(desktop, dtype=np.float32, copy=True)
+        target = self.monitor_queue
+        if target is not None:
+            try:
+                mixed += target.get_nowait()
+            except queue.Empty:
+                pass
+        # One EQ state for the combined desktop + optional microphone signal.
+        out = self.headphones.process(mixed)
+        if self.fault.is_set():
+            out.fill(0)
+        return out
+
+    def run_speakers(self, reader, writer, frames, stop):
+        import numpy as np
+        try:
+            while not self.stopping and not stop.is_set():
+                data = read_exact(reader.stdout, frames*8)
+                desktop = np.frombuffer(data, dtype='<f4').reshape(-1, 2)
+                write_all(writer.stdin, self.mix_speakers(desktop).tobytes())
         except Exception as exc:
-            if self.monitor_queue is target and not self.stopping:
-                self.monitor_error = f'Escucha interrumpida: {exc}'
+            if not self.stopping and not stop.is_set():
+                self.fault.set()
+                self.error = f'Salida de altavoces interrumpida: {exc}'
+
+    def monitor(self, enabled, sink):
+        # Oírme controls only whether microphone samples enter the speaker mix.
+        # Desktop playback remains active even with Oírme OFF.
+        if enabled:
+            if sink != self.sink:
+                self.set_output(sink)
+            self.monitor_queue = queue.Queue(maxsize=2)
+        else:
+            self.monitor_queue = None
+
+    def use_as_defaults(self):
+        if not self.modules or self.stopping:
+            raise RuntimeError('Primero inicia el audio de Voz Clara.')
+        pactl('set-default-source', MIC_SOURCE)
+        try:
+            pactl('set-default-sink', SPEAKER_SINK)
+        except Exception:
+            pactl('set-default-source', self.source)
+            raise
+
+    def guard_routes(self):
+        while not self.guard_stop.wait(.3):
+            if self.output_switching:
+                continue
+            generation = self.output_generation
+            try:
+                records = {kind: json.loads(pactl('-f', 'json', 'list', kind))
+                    for kind in ('sources', 'sinks', 'source-outputs', 'sink-inputs')}
+                if self.output_switching or generation != self.output_generation:
+                    continue
+                message = routing_error(records['sources'], records['sinks'],
+                    records['source-outputs'], records['sink-inputs'], self.expected, self.session)
+                if message:
+                    self.fault.set()
+                    self.error = message
+                    return
+            except Exception as exc:
+                if not self.guard_stop.is_set():
+                    self.fault.set()
+                    self.error = f'No se pudo comprobar la ruta de audio: {exc}'
+                return
 
     @staticmethod
     def terminate(process):
@@ -252,9 +399,33 @@ class Engine:
             if stream:
                 stream.close()
 
+    def stop_speakers(self):
+        self.speaker_stop.set()
+        for process in self.speaker_processes:
+            self.terminate(process)
+        if self.speaker_thread:
+            self.speaker_thread.join(timeout=2)
+        self.speaker_thread = None
+        self.speaker_processes = []
+
     def stop(self):
         self.stopping = True
-        self.monitor(False, None)
+        self.guard_stop.set()
+        self.fault.set()
+        self.monitor_queue = None
+        if self.modules:
+            # Restore only if the user still has one of OUR endpoints selected.
+            for kind, fallback in (('source', getattr(self, 'source', '')), ('sink', getattr(self, 'sink', ''))):
+                try:
+                    if pactl('get-default-'+kind).startswith('voz_clara'):
+                        previous = self.previous_defaults.get(kind) or fallback
+                        if previous.startswith('voz_clara'):
+                            previous = fallback
+                        if previous:
+                            pactl('set-default-'+kind, previous)
+                except Exception:
+                    pass
+        self.stop_speakers()
         for p in self.processes:
             if p.poll() is None:
                 p.terminate()
@@ -262,7 +433,10 @@ class Engine:
             self.terminate(p)
         if self.thread:
             self.thread.join(timeout=3)
-        self.thread = None
+        if self.guard_thread:
+            self.guard_thread.join(timeout=1)
+        self.thread = self.guard_thread = None
+        self.noise.close()
         self.processes = []
         for module in self.modules[::-1]:
             try:
@@ -270,3 +444,4 @@ class Engine:
             except Exception:
                 pass
         self.modules = []
+        self.previous_defaults = {}

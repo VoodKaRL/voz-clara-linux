@@ -1,71 +1,65 @@
-# Voz Clara — Linux
+# Voz Clara Linux — manual
 
-Versión 0.2 en código fuente. Una sola entrada física mono/estéreo, gate con ataque y cierre suave, compresor, panel de tono, volumen y mute de micrófono. Escucha directa con volumen independiente y ecualizador de cinco bandas. Publica un solo micrófono virtual llamado `Voz_Clara`. No incluye entradas AUX ni mezclador de audio del escritorio.
+Versión 0.3.0. Una entrada física, un micrófono virtual y un altavoz virtual. El código es experimental: las pruebas automáticas no sustituyen la medición con tu hardware.
 
-## Instalación
+## Instalar y actualizar
 
-**Bazzite GNOME/KDE:** usa el comando único de la sección Bazzite del [README](README.md). Prepara todas las dependencias en Distrobox y crea un acceso en el menú. No uses las instrucciones de `dnf` del host Fedora tradicional. Para actualizar, repite el instalador con la app cerrada.
+En Bazzite GNOME/KDE ejecuta el comando único del [README](README.md). Instala las dependencias automáticamente en Distrobox y crea Voz Clara Linux en el menú. Cierra la app antes de repetir ese mismo comando para actualizar. No uses sudo ni las instrucciones de dnf de Fedora tradicional sobre el host Bazzite.
 
-Requiere Linux de escritorio, Python 3.10 o posterior y PipeWire con pipewire-pulse o PulseAudio. No reemplaces tu servidor de audio.
+Las instrucciones manuales para Ubuntu/Debian, Fedora y Arch también están en el README. Conserva tu servidor PipeWire + pipewire-pulse o PulseAudio.
 
-Ubuntu / Debian / Mint:
+## Conectar los dispositivos
+
+1. Dentro de Voz Clara elige el micrófono físico y el altavoz/auriculares físicos. Nunca selecciones un dispositivo de Voz Clara como su propia entrada o salida física.
+2. Empieza con 48000 Hz / 128 muestras; si hay cortes, prueba 256 o 512.
+3. Pulsa Iniciar audio.
+4. Pulsa Usar Voz Clara por defecto, o selecciona en GNOME entrada **Voz_Clara_Microfono** y salida **Voz_Clara_Altavoces**.
+5. Enciende Oírme si deseas escuchar tu propia voz. OFF retira solo tu voz; el audio del escritorio sigue sonando.
+
+El EQ de cinco bandas y el volumen de salida afectan al escritorio enviado al altavoz virtual y a la escucha de tu voz. No afectan al micrófono virtual. Si una aplicación tiene seleccionada directamente la salida física, su sonido evita el EQ.
+
+La app debe permanecer abierta. Al detenerla se retiran los dispositivos virtuales y se intenta restaurar los predeterminados anteriores, siempre que aún estén seleccionados los de Voz Clara. No se cambia una elección posterior del usuario hacia otro dispositivo.
+
+## Controles del micrófono
+
+- **Panel de tono:** izquierda realza graves y reduce agudos; derecha hace lo contrario. Arriba aumenta ambas bandas y abajo las reduce. Doble clic centra el punto. Control propio, sin usar el algoritmo Intellipan.
+- **Gate:** −80 desactiva el gate. Sube el umbral hasta ocultar el ruido entre frases. El gate no elimina ruido durante la voz.
+- **Comp:** 0 desactiva el compresor. 1–10 aumenta su intensidad. Ataque 5 ms, liberación 80 ms y sin ganancia automática.
+- **Mono:** promedia izquierdo y derecho y coloca la misma voz en ambos canales. Desactivado conserva estéreo.
+- **Volumen y silencio del micrófono:** solo afectan al micrófono virtual y a su escucha.
+
+El gate y el panel de tono mantienen su procesamiento de las versiones anteriores. Se añade protección de componente continua y un arranque suave al final de la ruta del micrófono.
+
+## Supresión de ruido de fondo
+
+Control independiente con motor RNNoise local. No transmite audio a la nube. Puede reducir ruido mientras hablas; no elimina todos los sonidos.
+
+Actívalo a 48000 Hz y empieza con potencia 70 %. El porcentaje controla la mezcla alineada original/filtrada: 0 % conserva el original y 100 % aplica el filtrado completo. No indica el porcentaje real de ruido eliminado. Si notas voz artificial, baja la potencia.
+
+ON/OFF y potencia tienen transiciones suaves. El filtro acumula bloques nativos de 480 muestras y mantiene acotadas sus colas. Al activarse se calienta antes de entrar. La ruta ON añade aproximadamente 30 ms de filtrado y adaptación, aunque el porcentaje esté en 0. La mezcla original/filtrada compensa el retardo de 20 ms del modelo. OFF vuelve al audio sin ese retardo tras la transición.
+
+Si el motor ya está funcionando a 44100 o 96000 Hz, detén el audio y cambia a 48000 antes de activar RNNoise. Si activas el control con el motor detenido, la frecuencia se ajusta automáticamente.
+
+## Evitar bucles
+
+La captura física siempre apunta al micrófono seleccionado. El audio del escritorio nunca se envía al micrófono virtual. Los destinos internos están fijados y se desactiva el movimiento/fallback de PipeWire. Una vigilancia adicional detiene y silencia si descubre una ruta movida hacia otro dispositivo.
+
+El bus de micrófono se marca como interno/oculto. Algunas herramientas técnicas pueden mostrarlo como **Voz_Clara_Interno_NO_SELECCIONAR**: no lo elijas como salida. Usa **Voz_Clara_Altavoces**. Actualiza con la versión anterior cerrada; si hubo un cierre abrupto, sus módulos pueden seguir cargados. No descargues módulos ajenos. Un reinicio de la sesión retira los módulos temporales.
+
+## Latencia y diagnóstico
+
+128 muestras a 48000 Hz son 2,67 ms por bloque, no la latencia total. La frecuencia y el búfer se solicitan al servidor; no cambian el quantum global de PipeWire ni obligan al hardware a esa frecuencia. La supresión añade su retardo, y aplicaciones de llamadas/Bluetooth pueden añadir otros. Usa auriculares por cable o USB y mide un bucle físico si necesitas conocer la latencia completa.
+
+La interfaz muestra tiempo de DSP del último bloque y descartes de la cola de escucha. Si hay cortes, aumenta el búfer. Una ganancia o EQ excesivos pueden producir recorte; baja los niveles. Para que los cambios de dispositivo de entrada/Hz/búfer surtan efecto, detén y reinicia el audio.
+
+Si no aparecen dispositivos, comprueba Ajustes → Sonido de GNOME y pulsa Actualizar dispositivos con el audio detenido. La app no acepta salidas ficticias null. Si falla, copia el mensaje inferior de la ventana para diagnosticar la conexión.
+
+## Pruebas
+
+Con las dependencias instaladas:
 
 ```sh
-sudo apt install python3-venv pulseaudio-utils libegl1 libxcb-cursor0
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
-Fedora:
-
-```sh
-sudo dnf install python3 python3-pip pulseaudio-utils
-```
-
-Arch:
-
-```sh
-sudo pacman -S python python-pip libpulse
-```
-
-Descomprime la carpeta, abre un terminal en ella y ejecuta:
-
-```sh
-bash iniciar.sh
-```
-
-La primera ejecución crea un entorno Python local e instala las dependencias; necesita internet. No ejecutes la app con sudo.
-
-## Uso
-
-1. Selecciona tu micrófono en STEREO INPUT. MONO promedia los canales izquierdo y derecho y envía la misma voz a ambos lados. Desactívalo para conservar estéreo. Si el dispositivo físico es mono, el servidor lo adapta a los dos canales del flujo.
-2. Elige frecuencia, búfer y salida de auriculares antes de iniciar.
-3. Pulsa Iniciar micrófono y selecciona `Voz_Clara` en Discord, OBS o tu aplicación de llamadas.
-4. Sube el gate desde −80 hasta que el ruido deje de pasar cuando no hablas. Un gate silencia entre frases; no elimina ruido mientras hablas.
-5. Mueve el punto: izquierda realza graves y reduce agudos; derecha hace lo contrario. Arriba aumenta ambas bandas y abajo las reduce. Doble clic devuelve el tono neutro. Es un control propio, no una reproducción del algoritmo Intellipan.
-6. COMP, junto al gate, controla la compresión de la voz: 0 la desactiva; 1–10 aumenta la intensidad (umbral de −13,8 a −30 dBFS, relación 1,5:1 a 6:1). Ataque 5 ms, liberación 80 ms y sin lookahead ni ganancia automática. El gate detecta la entrada antes de comprimir; ajusta el volumen del micrófono después.
-7. Activa Escuchar mi voz para oír la señal procesada en la salida escogida. Usa auriculares. Su fader de volumen, mute y EQ (80, 250, 1000, 4000 y 12000 Hz; ±12 dB) solo modifican tu escucha. No cambian lo enviado por el micrófono virtual ni el audio de otras aplicaciones. EQ plano restablece las cinco bandas.
-
-Para cambiar dispositivos, Hz o búfer, detén y reinicia la captura. La selección y los controles se guardan al cerrar; no se activa el micrófono automáticamente.
-
-## Alcance y limitaciones
-
-La frecuencia controla el flujo de procesamiento. El búfer controla el bloque de la app y solicita una latencia al servidor, pero no cambia globalmente el quantum de PipeWire ni obliga al hardware a esa frecuencia. La latencia real incluye captura, servidor, procesamiento y reproducción. El medidor muestra salida procesada en un rango de −90 a 0 dBFS. La salida se recorta a ±1 para evitar desbordamiento; demasiada ganancia produce distorsión.
-
-## Escucha en directo y latencia
-
-La versión 0.2 elimina el loopback adicional de 20 ms de la primera versión. Bifurca el bloque procesado: una ruta va al micrófono virtual y otra directamente a los auriculares, sin volver a capturar el monitor virtual. Captura y reproducción usan pipes sin búfer Python y solicitan tanto el tamaño de búfer como el intervalo de procesamiento al servidor. La escucha corre en un hilo separado con un máximo de dos bloques en su cola; ante sobrecarga descarta el más antiguo para no acumular retraso en esa cola. El servidor y los pipes tienen sus propios búferes adicionales.
-
-Punto de partida: 48000 Hz / 128 muestras (2,67 ms por bloque solicitado). Si aparecen cortes, prueba 256 y después 512. El bloque de 2,67 ms no significa 2,67 ms de latencia total. La interfaz muestra el tiempo real empleado por el DSP del último bloque y el número de bloques de escucha descartados; no mide el recorrido completo de audio. Un valor de DSP menor que el bloque es necesario, pero no garantiza ausencia de cortes del sistema.
-
-No existe latencia cero por software. Para comprobar la latencia real, hay que medir en Linux un impulso y su retorno con conexión de bucle físico o una herramienta de medición, con el mismo dispositivo, frecuencia y búfer usados en la app. Para escucharte, favorece auriculares por cable o USB; Bluetooth añade su propia latencia. Discord/OBS pueden añadir otros búferes, procesamiento y retrasos de red. La app procesa continuamente y no graba para reproducir después.
-
-Se crea un bus interno de salida y su monitor técnico para construir el único micrófono virtual público. Herramientas avanzadas de Linux también pueden mostrar ese monitor; no son canales AUX adicionales. La app no cambia los dispositivos predeterminados del sistema.
-
-La implementación usa Qt, NumPy/SciPy y las utilidades de PulseAudio. No es un binario empaquetado ni está validada todavía con hardware Linux. El procesamiento Python puede necesitar bloques mayores en equipos lentos. Si falta un dispositivo, detén, reconecta y pulsa Actualizar dispositivos. Si una aplicación no muestra el micrófono virtual, vuelve a abrir su selector de audio. Si falla la escucha, se desactiva y se mantiene la captura virtual; si falla la captura o la salida virtual, se detiene el motor.
-
-Al detener o cerrar normalmente se eliminan los módulos creados por la app. Si termina abruptamente, consulta `pactl list short modules` y descarga con `pactl unload-module ID` solamente los módulos con `voz_clara` en sus argumentos, primero remap-source y después null-sink. No descargues módulos de otras aplicaciones.
-
-## Verificación
-
-Pruebas: `python -m unittest discover -s tests -v` con las dependencias instaladas. Comprueban gate, tono, compresión, continuidad entre bloques, mono/estéreo, EQ y mute independientes, transferencias parciales de pipes y tamaños de búfer solicitados. Hace falta una prueba adicional en Linux con micrófono real: iniciar, comprobar captura en otra app, escuchar, medir latencia, probar 128/256/512 muestras, verificar que EQ/volumen de auriculares no cambian la grabación virtual y confirmar que al cerrar desaparece el micrófono virtual.
-
-Referencias técnicas: [módulos PulseAudio](https://www.freedesktop.org/wiki/Software/PulseAudio/Documentation/User/Modules/), [opciones de búfer de pacat](https://github.com/pulseaudio/pulseaudio/blob/master/src/utils/pacat.c).
+La prueba de servidores de audio está aislada y se activa expresamente en CI con VOZ_CLARA_AUDIO_TEST=1. Usa dispositivos sintéticos y no prueba hardware real. Consulta [THIRD_PARTY.md](THIRD_PARTY.md) para los componentes de terceros.

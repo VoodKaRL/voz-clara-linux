@@ -1,21 +1,23 @@
 # Voz Clara Linux
 
-Un mezclador sencillo para transformar tu micrófono y escucharte en directo en Linux. Una entrada física, un micrófono virtual y controles fáciles de mover.
+Un mezclador sencillo para transformar tu micrófono y controlar el sonido de Linux. Un micrófono virtual, un altavoz virtual y controles fáciles de mover.
 
-**Versión 0.2.1 · Experimental.** El procesamiento y la interfaz tienen pruebas automáticas. La captura, la compatibilidad con dispositivos y la latencia total todavía necesitan validación con hardware Linux.
+**Versión 0.3.0 · Experimental.** Las pruebas cubren procesamiento, RNNoise y rutas de audio con servidores aislados en Linux. La compatibilidad y la latencia con hardware Bazzite todavía necesitan validación.
 
 ## Qué puedes hacer
 
 - Elegir tu micrófono físico y la salida para escucharte.
-- Usar un único micrófono virtual: **Voz_Clara** en Discord, OBS y otras aplicaciones.
+- Usar **Voz_Clara_Microfono** como entrada predeterminada en Discord, OBS y Linux.
+- Usar **Voz_Clara_Altavoces** como salida predeterminada y aplicar volumen y EQ al audio del sistema.
 - Ajustar gate y compresor para controlar la voz.
 - Cambiar graves y agudos moviendo un punto en un panel.
 - Activar mono o conservar estéreo.
 - Regular el volumen y silenciar el micrófono.
 - Escuchar la voz procesada con volumen, silencio y EQ de cinco bandas independientes.
+- Reducir ruido de fondo con **RNNoise**, ON/OFF y potencia de 0 a 100 %, separado del gate.
 - Elegir frecuencia de procesamiento y tamaño de búfer solicitado.
 
-El EQ y volumen de auriculares solo afectan a tu escucha de la voz; no al audio de otras aplicaciones ni a lo enviado por el micrófono virtual. No hay canales AUX ni mezclador de audio del escritorio.
+El EQ y volumen de salida afectan al audio que las aplicaciones envían a **Voz_Clara_Altavoces** y a tu voz si activas **Oírme**. No modifican lo enviado por el micrófono virtual. **Oírme OFF no silencia el escritorio.** Las aplicaciones que envíen directamente a un altavoz físico evitan el EQ de Voz Clara.
 
 ## Instalar en Linux
 
@@ -71,14 +73,33 @@ La primera ejecución instala las dependencias Python en `.venv`, dentro del pro
 
 1. Selecciona **Escoger micrófono** en el panel izquierdo y **Escoger altavoz / auriculares** en el panel central.
 2. Empieza con **48000 Hz / 128 muestras**. Si hay cortes, aumenta a 256 o 512.
-3. Pulsa **Iniciar micrófono**.
-4. En la aplicación de llamadas o grabación, elige **Voz_Clara** como micrófono.
+3. Pulsa **Iniciar audio**.
+4. Pulsa **Usar Voz Clara por defecto**, o elige en Ajustes → Sonido de GNOME: entrada **Voz_Clara_Microfono** y salida **Voz_Clara_Altavoces**. Dentro de Voz Clara conserva seleccionados los dispositivos físicos.
 5. Pulsa **Oírme: OFF** para pasar a **Oírme: ON** y monitorizar la señal procesada. Es un botón, separado del selector de salida. Usa auriculares. Puedes cambiar de altavoz durante la escucha.
 6. Ajusta gate, compresor, panel de tono y volumen. El EQ de auriculares es independiente.
 
-Para cambiar dispositivos, Hz o búfer, detén y reinicia la captura. Al cerrar se guardan los controles y se retira el micrófono virtual; la app debe permanecer abierta mientras lo usas.
+Para cambiar el micrófono, Hz o búfer, detén y reinicia el audio. Puedes cambiar el altavoz físico durante el funcionamiento. Al cerrar se guardan los controles, se retiran los dispositivos virtuales y se intenta restaurar la entrada/salida anterior si aún estaban seleccionados los de Voz Clara. La app debe permanecer abierta mientras usas sus dispositivos.
 
 Si antes aparecía «null», cierra la app y repite el instalador Bazzite para recibir la corrección. La app prueba la conexión al audio del host y, si hace falta y las utilidades están disponibles en el host, el puente de Distrobox. La misma ruta se usa para enumerar, capturar y reproducir. No presenta una salida ficticia como altavoz: si no ve hardware muestra «Sin micrófonos/altavoces disponibles» y el error correspondiente. Comprueba también que los dispositivos aparezcan en Ajustes → Sonido de GNOME.
+
+## Supresión de ruido
+
+Es un filtro de voz local basado en [RNNoise de Xiph](https://github.com/xiph/rnnoise), independiente del gate. Puede reducir ruido de fondo mientras hablas. No envía audio a servicios externos. El instalador incluye el motor mediante la dependencia [pyrnnoise](https://github.com/pengzhendong/pyrnnoise).
+
+- **OFF:** conserva la señal original. Al apagar el filtro, una transición de unos 20 ms devuelve el audio sin el retardo añadido del filtro.
+- **ON:** requiere **48000 Hz**. Al activarlo con el motor detenido, la frecuencia se ajusta automáticamente. Si ya estás usando otra frecuencia, detén primero el audio.
+- **Potencia 0–100 %:** mezcla alineada del audio original y filtrado; no es una promesa del porcentaje de ruido eliminado. 0 % conserva el original con el retardo de la ruta activada; 100 % aplica RNNoise completo. Empieza con 70 % y ajusta escuchando tu voz.
+- **Cambios en directo:** potencia y ON/OFF usan transiciones suaves. El filtro se calienta antes de entrar y mantiene acotadas sus colas; no acumula segundos de audio.
+
+RNNoise trabaja en bloques de 10 ms. El modelo incluido tiene 20 ms de retardo, verificados por correlación en las pruebas; con la adaptación de bloques, la ruta activada añade aproximadamente 30 ms al micrófono, además del resto de latencias del sistema. La señal original de la mezcla se retrasa lo mismo para evitar coloración por desalineación. Reduce la potencia si percibes voz artificial o pérdida de consonantes; la calidad depende del ruido y el micrófono. No elimina todo tipo de sonidos ni sustituye una buena colocación del micrófono.
+
+Orden de micrófono: supresión opcional → controles de voz existentes (tono, gate, compresor, ganancia) → protección contra componente continua y arranque suave → micrófono virtual. **El gate y el panel de tono conservan su algoritmo.**
+
+## Rutas sin realimentación
+
+El micrófono físico siempre alimenta el micrófono virtual. El escritorio entra por el altavoz virtual, pasa por el EQ y sale al altavoz físico. Oírme agrega tu voz únicamente a esa salida; nunca envía el escritorio al micrófono virtual.
+
+Las conexiones internas fijan su destino y desactivan el movimiento/fallback en PipeWire. Un vigilante detecta movimientos inesperados y silencia el procesamiento para evitar un bucle. El bus técnico de micrófono está marcado como interno/oculto; si alguna herramienta lo muestra, **no lo elijas como altavoz del sistema**. Usa **Voz_Clara_Altavoces**.
 
 ## Actualizar
 
@@ -96,7 +117,7 @@ Si lo descargaste como ZIP, descarga la nueva versión y descomprímela en una c
 
 ## Sobre el tiempo real
 
-La app procesa bloques continuamente, sin grabar para reproducir después. Envía cada bloque procesado al micrófono virtual y, si activas la escucha, a los auriculares por una ruta independiente. La escucha no pasa por un loopback adicional y su cola se limita a dos bloques para evitar que acumule retraso si se satura.
+La app procesa bloques continuamente, sin grabar para reproducir después. El audio del escritorio y la escucha opcional de voz se mezclan antes del EQ de salida, con estados de filtro únicos. La cola de escucha se limita a dos bloques para evitar acumular retraso. La supresión de ruido añade el retardo indicado arriba cuando está activada.
 
 **128 muestras a 48000 Hz son 2,67 ms por bloque, no 2,67 ms de latencia total.** El dispositivo, el servidor de audio y la aplicación receptora añaden retraso. No se garantiza latencia cero ni funcionamiento de tiempo real estricto. Para medir la latencia completa hace falta una prueba de retorno físico en Linux. Usa auriculares por cable o USB para reducir el retraso de monitorización.
 
@@ -110,7 +131,7 @@ Después de instalar dependencias:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Las pruebas cubren DSP, mono/estéreo, compresión, separación del EQ de escucha, continuidad de bloques, transferencias parciales y una escucha atascada que no bloquea el micrófono virtual. GitHub Actions ejecuta estas pruebas en Linux. No sustituyen la validación con hardware.
+Las pruebas cubren DSP, supresión RNNoise nativa, mezclas por porcentaje y su alineación temporal, continuidad de bloques, prevención de rutas hacia sí mismo y restauración de predeterminados. GitHub Actions también prueba audio del escritorio, EQ, Oírme y cambio de predeterminados con servidores PulseAudio/PipeWire aislados y dispositivos sintéticos. No sustituyen la validación con hardware.
 
 Al informar un problema incluye distribución, PipeWire o PulseAudio, modelo de micrófono, salida de auriculares, frecuencia y búfer, y qué ocurre. Puedes proponer mejoras en Issues.
 

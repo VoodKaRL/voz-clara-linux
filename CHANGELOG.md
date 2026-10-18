@@ -1,5 +1,17 @@
 # Cambios
 
+## 0.3.0 — Salida del sistema y supresión de ruido
+
+- Altavoz virtual público Voz_Clara_Altavoces: audio del sistema → EQ/volumen → salida física.
+- Micrófono virtual separado y bus técnico marcado como interno/oculto.
+- Oírme ON/OFF agrega o retira solo la voz de la salida; el escritorio sigue sonando.
+- Destinos fijados, sin movimiento/fallback de PipeWire, y vigilancia contra realimentación.
+- Eliminación de componente continua y arranque suave en la salida de micrófono, manteniendo el gate y tono existentes.
+- Botón para usar ambos dispositivos virtuales por defecto y restauración al cerrar.
+- RNNoise local: control independiente ON/OFF y potencia 0–100 %, mezcla alineada y cambios suaves.
+- Supresión a 48 kHz, con unos 30 ms adicionales de ruta cuando está activada y mezcla original/filtrada alineada con el retardo real del modelo.
+- Pruebas de audio con servidores PulseAudio y PipeWire aislados en CI.
+
 ## 0.2.1 — Corrección de dispositivos
 
 - Selectores visibles de micrófono y altavoz/auriculares en sus paneles.

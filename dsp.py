@@ -73,6 +73,25 @@ class Processor:
         return out[:, 0] if flat else out
 
 
+class MicrophoneOutput:
+    """Remove DC and fade the first 20 ms without changing the voice controls."""
+    def __init__(self, rate):
+        self.pole = math.exp(-2*math.pi*10/rate)
+        self.state = np.zeros((1, 2))
+        self.position = 0
+        self.fade_frames = max(1, int(rate*.02))
+
+    def process(self, samples):
+        out, self.state = lfilter([1, -1], [1, -self.pole], samples,
+                                  axis=0, zi=self.state)
+        if self.position < self.fade_frames:
+            ramp = np.minimum(1, np.arange(self.position,
+                self.position+len(out), dtype=float)/self.fade_frames)
+            out *= ramp[:, None]
+            self.position += len(out)
+        return np.clip(out, -1, 1).astype('<f4')
+
+
 class Headphones:
     frequencies = (80, 250, 1000, 4000, 12000)
 

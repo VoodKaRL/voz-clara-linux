@@ -2,7 +2,7 @@ import sys
 from PySide6.QtCore import Qt, QTimer, QSettings, QPointF
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QComboBox, QPushButton, QSlider, QGroupBox, QProgressBar, QMessageBox)
+    QComboBox, QPushButton, QSlider, QGroupBox, QProgressBar, QMessageBox, QScrollArea)
 from audio import Engine, devices, configure_audio
 
 
@@ -54,7 +54,7 @@ class Window(QWidget):
         super().__init__()
         self.engine = Engine()
         self.settings = QSettings('VozClara', 'VozClara')
-        self.setWindowTitle('Voz Clara · Mezclador de micrófono')
+        self.setWindowTitle('Voz Clara 0.3.0 · Micrófono y altavoces')
         self.resize(1000, 840)
         root = QVBoxLayout(self)
         title = QLabel('VOZ CLARA  /  LINUX')
@@ -119,7 +119,7 @@ class Window(QWidget):
         self.mono.toggled.connect(self.sync)
         left.addWidget(self.mono)
         row.addWidget(strip, 3)
-        headphones_box = QGroupBox('AURICULARES · Escucha de tu voz')
+        headphones_box = QGroupBox('ALTAVOCES / AURICULARES · Salida')
         hp = QVBoxLayout(headphones_box)
         hp.addWidget(QLabel('Escoger altavoz / auriculares'))
         self.sink = QComboBox()
@@ -173,12 +173,19 @@ class Window(QWidget):
         self.hp_mute.setCheckable(True)
         self.hp_mute.toggled.connect(self.sync)
         hp.addWidget(self.hp_mute)
-        note = QLabel('Volumen y EQ solo para escucharte. No alteran el micrófono virtual ni otras aplicaciones.')
+        note = QLabel('Volumen y EQ para el audio enviado a Voz Clara Altavoces y tu voz si activas Oírme. El micrófono virtual conserva sus propios ajustes.')
         note.setWordWrap(True)
         hp.addWidget(note)
         row.addWidget(headphones_box, 2)
-        side = QVBoxLayout()
-        row.addLayout(side, 2)
+        side_widget = QWidget()
+        side = QVBoxLayout(side_widget)
+        side.setContentsMargins(0, 0, 0, 0)
+        side_scroll = QScrollArea()
+        side_scroll.setWidgetResizable(True)
+        side_scroll.setMinimumWidth(260)
+        side_scroll.setStyleSheet('QScrollArea { border: 0; }')
+        side_scroll.setWidget(side_widget)
+        row.addWidget(side_scroll, 2)
         box = QGroupBox('AJUSTES DE AUDIO')
         form = QVBoxLayout(box)
         form.addWidget(QLabel('Frecuencia de procesamiento'))
@@ -207,14 +214,36 @@ class Window(QWidget):
         tip.setWordWrap(True)
         form.addWidget(tip)
         side.addWidget(box)
+        noise_box = QGroupBox('SUPRESIÓN DE RUIDO · Micrófono')
+        noise_form = QVBoxLayout(noise_box)
+        self.noise_button = QPushButton('Supresión de ruido: OFF')
+        self.noise_button.setCheckable(True)
+        self.noise_button.setChecked(str(self.settings.value('noise_enabled', 'false')).lower() == 'true')
+        self.noise_button.toggled.connect(self.toggle_noise)
+        noise_form.addWidget(self.noise_button)
+        self.noise_strength_label = QLabel()
+        noise_form.addWidget(self.noise_strength_label)
+        self.noise_strength = QSlider(Qt.Orientation.Horizontal)
+        self.noise_strength.setRange(0, 100)
+        self.noise_strength.setValue(int(self.settings.value('noise_strength', 70)))
+        self.noise_strength.valueChanged.connect(self.sync)
+        noise_form.addWidget(self.noise_strength)
+        noise_hint = QLabel('RNNoise reduce ruido mientras hablas. 0 % conserva el audio; 100 % aplica todo el filtro. Usa 48.000 Hz; añade latencia de filtrado.')
+        noise_hint.setWordWrap(True)
+        noise_form.addWidget(noise_hint)
+        side.addWidget(noise_box)
         self.refresh = QPushButton('Actualizar dispositivos')
         self.refresh.clicked.connect(self.load_devices)
         side.addWidget(self.refresh)
-        self.start = QPushButton('Iniciar micrófono')
+        self.start = QPushButton('Iniciar audio')
         self.start.setCheckable(True)
         self.start.toggled.connect(self.toggle)
         side.addWidget(self.start)
-        info = QLabel('En tu aplicación de llamadas selecciona:\n\nVoz_Clara\n\nSolo se publica un micrófono virtual mientras está activo.')
+        self.defaults = QPushButton('Usar Voz Clara por defecto')
+        self.defaults.setEnabled(False)
+        self.defaults.clicked.connect(self.use_defaults)
+        side.addWidget(self.defaults)
+        info = QLabel('Dispositivos del sistema:\n\nEntrada: Voz_Clara_Microfono\nSalida: Voz_Clara_Altavoces\n\nDentro de esta app elige siempre el micrófono y altavoz físicos. Mantén la app abierta.')
         info.setWordWrap(True)
         side.addWidget(info)
         side.addStretch()
@@ -223,6 +252,7 @@ class Window(QWidget):
         root.addWidget(self.status)
         self.pad.x = float(self.settings.value('x', 0))
         self.pad.y = float(self.settings.value('y', 0))
+        self.toggle_noise(self.noise_button.isChecked())
         self.sync()
         self.load_devices()
         self.timer = QTimer(self)
@@ -243,7 +273,7 @@ class Window(QWidget):
                 idx = combo.findData(previous[key])
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
-            self.status.setText('Escoge micrófono y altavoz. Pulsa Iniciar y activa Oírme si quieres escucharte.'
+            self.status.setText('Escoge micrófono y altavoz físicos. Inicia el audio y selecciona Voz Clara por defecto.'
                 if self.source.count() and self.sink.count() else
                 'Faltan dispositivos: revisa el micrófono y la salida en los ajustes de sonido de GNOME y pulsa Actualizar dispositivos.')
         except Exception as exc:
@@ -254,7 +284,7 @@ class Window(QWidget):
                     combo.addItem(label, None)
                     combo.model().item(0).setEnabled(False)
                 combo.blockSignals(False)
-            self.start.setEnabled(bool(self.source.currentData()))
+            self.start.setEnabled(bool(self.source.currentData()) and bool(self.sink.currentData()))
             self.listen.setEnabled(self.start.isChecked() and bool(self.sink.currentData()))
 
     def sync(self):
@@ -269,6 +299,8 @@ class Window(QWidget):
         self.engine.headphones.gains = tuple(slider.value() for slider in self.eq)
         self.engine.headphones.volume_db = self.hp_gain.value()
         self.engine.headphones.muted = self.hp_mute.isChecked()
+        self.engine.noise.strength = self.noise_strength.value()
+        self.noise_strength_label.setText(f'Potencia · {self.noise_strength.value()} %')
         self.hp_label.setText(f'Volumen auriculares · {self.hp_gain.value():+d} dB')
         for slider, label in zip(self.eq, self.eq_labels):
             label.setText(f'{slider.value():+d} dB')
@@ -279,19 +311,44 @@ class Window(QWidget):
         for slider in self.eq:
             slider.setValue(0)
 
+    def toggle_noise(self, enabled):
+        running = hasattr(self, 'start') and self.start.isChecked()
+        try:
+            if enabled and self.rate.currentText() != '48000':
+                if running:
+                    raise RuntimeError('Detén el audio y selecciona 48000 Hz para activar la supresión de ruido.')
+                self.rate.setCurrentText('48000')
+            if running:
+                self.engine.noise.set_enabled(enabled)
+        except Exception as exc:
+            self.noise_button.blockSignals(True)
+            self.noise_button.setChecked(False)
+            self.noise_button.blockSignals(False)
+            enabled = False
+            QMessageBox.warning(self, 'Supresión de ruido', str(exc))
+        self.noise_button.setText('Supresión de ruido: ON' if enabled else 'Supresión de ruido: OFF')
+        self.noise_strength.setEnabled(enabled)
+        self.rate.setEnabled(not running and not enabled)
+        self.update_latency()
+
     def update_latency(self):
         duration = int(self.buffer.currentText())/int(self.rate.currentText())*1000
         self.latency_label.setText(f'Bloque: {duration:.2f} ms. Búfer solicitado por flujo: {duration:.2f} ms. '
-            'No es la latencia total medida. Si hay cortes, prueba 256 o 512 muestras.')
+            'No es la latencia total medida. Si hay cortes, prueba 256 o 512 muestras.' +
+            (' Supresión ON: aproximadamente 30 ms adicionales de filtrado y adaptación.'
+                if hasattr(self, 'noise_button') and self.noise_button.isChecked() else ''))
 
     def toggle(self, enabled):
         if enabled:
             try:
                 if not self.source.currentData():
                     raise RuntimeError('Selecciona un micrófono disponible.')
-                self.engine.start(self.source.currentData(), int(self.rate.currentText()), int(self.buffer.currentText()))
+                if not self.sink.currentData():
+                    raise RuntimeError('Selecciona un altavoz o unos auriculares físicos.')
+                self.engine.start(self.source.currentData(), self.sink.currentData(), int(self.rate.currentText()), int(self.buffer.currentText()),
+                    self.noise_button.isChecked(), self.noise_strength.value())
                 self.sync()
-                self.status.setText('Activo · Selecciona Voz_Clara como micrófono en tus aplicaciones.')
+                self.status.setText('Activo · Voz_Clara_Microfono para entrada y Voz_Clara_Altavoces para salida del sistema.')
             except Exception as exc:
                 self.start.setChecked(False)
                 QMessageBox.warning(self, 'No se pudo iniciar', str(exc))
@@ -299,11 +356,13 @@ class Window(QWidget):
         else:
             self.listen.setChecked(False)
             self.engine.stop()
-            self.status.setText('Micrófono detenido')
-        self.start.setText('Detener micrófono' if enabled else 'Iniciar micrófono')
+            self.status.setText('Audio detenido · Se retiraron los dispositivos virtuales.')
+        self.start.setText('Detener audio' if enabled else 'Iniciar audio')
+        self.defaults.setEnabled(enabled)
         self.listen.setEnabled(enabled and bool(self.sink.currentData()))
         for widget in (self.source, self.rate, self.buffer, self.refresh):
             widget.setEnabled(not enabled)
+        self.rate.setEnabled(not enabled and not self.noise_button.isChecked())
 
     def monitor(self, enabled):
         try:
@@ -317,12 +376,27 @@ class Window(QWidget):
             QMessageBox.warning(self, 'Escucha', str(exc))
 
     def output_changed(self):
-        if hasattr(self, 'listen') and self.listen.isChecked():
-            self.monitor(True)
+        if hasattr(self, 'start') and self.start.isChecked() and self.sink.currentData():
+            try:
+                self.engine.set_output(self.sink.currentData())
+            except Exception as exc:
+                self.sink.blockSignals(True)
+                index = self.sink.findData(self.engine.sink)
+                if index >= 0:
+                    self.sink.setCurrentIndex(index)
+                self.sink.blockSignals(False)
+                QMessageBox.warning(self, 'Salida de audio', str(exc))
+
+    def use_defaults(self):
+        try:
+            self.engine.use_as_defaults()
+            self.status.setText('Voz Clara es la entrada y salida predeterminada. Oírme solo activa tu voz; la salida del sistema sigue funcionando con OFF.')
+        except Exception as exc:
+            QMessageBox.warning(self, 'Dispositivos predeterminados', str(exc))
 
     def tick(self):
         self.meter.setValue(int(max(0, self.engine.processor.output_db+90)) if self.start.isChecked() else 0)
-        self.hp_meter.setValue(int(max(0, self.engine.headphones.output_db+90)) if self.listen.isChecked() else 0)
+        self.hp_meter.setValue(int(max(0, self.engine.headphones.output_db+90)) if self.start.isChecked() else 0)
         if self.start.isChecked():
             deadline = self.engine.frames/self.engine.rate*1000
             self.runtime_label.setText(f'DSP del último bloque: {self.engine.processing_ms:.2f} ms / {deadline:.2f} ms disponibles. '
@@ -344,6 +418,7 @@ class Window(QWidget):
         self.engine.stop()
         for key, value in dict(gate=self.gate.value(), gain=self.gain.value(), x=self.pad.x, y=self.pad.y,
                 comp=self.comp.value(), mono=self.mono.isChecked(), hp_gain=self.hp_gain.value(),
+                noise_enabled=self.noise_button.isChecked(), noise_strength=self.noise_strength.value(),
                 rate=self.rate.currentText(), buffer=self.buffer.currentText(), source=self.source.currentData(), sink=self.sink.currentData()).items():
             self.settings.setValue(key, value)
         for i, slider in enumerate(self.eq):
