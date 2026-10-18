@@ -98,16 +98,20 @@ class LinuxAudioTests(unittest.TestCase):
         self.addCleanup(stop)
         return stop
 
-    def record(self, source, duration=.8):
+    def record(self, source, duration=3):
         path = self.runtime / ('record-'+str(time.monotonic_ns())+'.raw')
         with path.open('wb') as output:
             process = subprocess.Popen(['parec', f'--device={source}', *audio.stream_args(48000, 256)],
-                stdout=output, stderr=subprocess.DEVNULL, env=self.env)
+                stdout=output, stderr=subprocess.PIPE, env=self.env)
             time.sleep(duration)
             audio.Engine.terminate(process)
+            detail = process.stderr.read().decode(errors='replace')
+            process.stderr.close()
         raw = path.read_bytes()
         samples = np.frombuffer(raw[:len(raw)//8*8], dtype='<f4').reshape(-1, 2)
-        self.assertGreater(len(samples), 4800, 'La ruta no entregó audio a tiempo')
+        self.assertGreater(len(samples), 4800,
+            'La ruta no entregó audio a tiempo: '+detail+'; motor: '+self.engine.error+
+            '; servidor: '+(self.runtime / 'server.log').read_text(errors='replace'))
         self.assertTrue(np.isfinite(samples).all())
         return samples[-4800:]
 
