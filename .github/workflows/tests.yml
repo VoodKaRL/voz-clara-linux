@@ -25,3 +25,30 @@ jobs:
         run: |
           bash -n iniciar.sh
           bash -n instalar-bazzite.sh
+
+  audio-routing:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        backend: [pulseaudio, pipewire]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Instalar servidor de pruebas
+        env:
+          AUDIO_BACKEND: ${{ matrix.backend }}
+        run: |
+          sudo apt-get update
+          if [ "$AUDIO_BACKEND" = pipewire ]; then
+            sudo apt-get install -y pipewire pipewire-pulse wireplumber dbus pulseaudio-utils
+          else
+            sudo apt-get install -y pulseaudio pulseaudio-utils
+          fi
+      - run: python -m pip install numpy scipy
+      - name: Probar rutas con servidor aislado sin hardware
+        env:
+          VOZ_CLARA_AUDIO_TEST: '1'
+          VOZ_CLARA_TEST_BACKEND: ${{ matrix.backend }}
+        run: python -m unittest discover -s tests -p test_linux_audio.py -v
