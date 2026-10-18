@@ -7,6 +7,7 @@ import time
 import os
 import stat
 import uuid
+import sys
 from pathlib import Path
 from dsp import Processor, Headphones, MicrophoneOutput
 from noise import NoiseSuppressor
@@ -207,8 +208,13 @@ class Engine:
             options['stdout'] = subprocess.PIPE
         else:
             options['stdin'] = subprocess.PIPE
-        return subprocess.Popen([*audio_command(program),
-            *pinned_args(self.rate, self.frames, device, role, self.session)], **options)
+        return subprocess.Popen(self.stream_command(program, device, role), **options)
+
+    def stream_command(self, program, device, role):
+        python = 'python3' if _audio_prefix else sys.executable
+        return [*audio_command(python), str(Path(__file__).with_name('pulse_stream.py')),
+            'record' if program == 'parec' else 'playback', device,
+            str(self.rate), str(self.frames), role, self.session]
 
     def start(self, source, sink, rate, frames, noise_enabled=False, noise_strength=70):
         for command in ('pactl', 'parec', 'pacat'):
