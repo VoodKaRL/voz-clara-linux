@@ -1,9 +1,19 @@
 import unittest
 import numpy as np
-from dsp import Processor, Headphones
+from dsp import Processor, Headphones, MicrophoneOutput
 
 
 class DSPTests(unittest.TestCase):
+    def test_microphone_output_removes_dc_and_fades_startup(self):
+        safety = MicrophoneOutput(48000)
+        dc = safety.process(np.full((48000, 2), .8, dtype='float32'))
+        self.assertEqual(float(dc[0, 0]), 0)
+        self.assertLess(float(np.max(np.abs(dc[-1000:]))), 1e-6)
+        samples = np.arange(48000)/48000
+        voice = np.repeat((.1*np.sin(2*np.pi*1000*samples))[:, None], 2, axis=1)
+        out = safety.process(voice)
+        self.assertAlmostEqual(float(np.std(out[-24000:])), float(np.std(voice[-24000:])), places=3)
+
     def test_neutral_and_mute(self):
         p = Processor(48000)
         p.gate_db = -80

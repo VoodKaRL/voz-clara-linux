@@ -21,6 +21,65 @@ class PartialWriter(io.BytesIO):
 
 
 class RoutingTests(unittest.TestCase):
+    def test_system_audio_passes_with_monitor_off(self):
+        engine = Engine()
+        engine.headphones.volume_db = 0
+        desktop = np.full((128, 2), .03, dtype='float32')
+        original = desktop.copy()
+        engine.monitor(False, None)
+        np.testing.assert_allclose(engine.mix_speakers(desktop), original, atol=1e-7)
+        np.testing.assert_array_equal(desktop, original)
+        engine.headphones.muted = True
+        self.assertEqual(float(np.max(np.abs(engine.mix_speakers(desktop)))), 0)
+
+    def test_monitor_adds_voice_only_to_speaker_mix(self):
+        engine = Engine()
+        engine.sink = 'physical-speaker'
+        engine.headphones.volume_db = 0
+        engine.monitor(True, 'physical-speaker')
+        desktop = np.full((128, 2), .01, dtype='float32')
+        engine.monitor_queue.put(np.full((128, 2), .02, dtype='float32'))
+        np.testing.assert_allclose(engine.mix_speakers(desktop), .03, atol=1e-7)
+        engine.monitor(False, None)
+        np.testing.assert_allclose(engine.mix_speakers(desktop), .01, atol=1e-7)
+
+    def test_stream_targets_cannot_follow_the_default(self):
+        args = audio.pinned_args(48000, 128, 'alsa_input.usb', 'microphone-input', 'test')
+        for flag in ('--device=alsa_input.usb', '--property=target.object=alsa_input.usb',
+                '--property=node.dont-move=true', '--property=node.dont-reconnect=true',
+                '--property=node.dont-fallback=true'):
+            self.assertIn(flag, args)
+        for name in ('voz_clara_mic', 'voz_clara_altavoces', 'voz_clara_bus', '@DEFAULT_SOURCE@', 'alsa_output.card.monitor'):
+            with self.assertRaises(RuntimeError):
+                audio.validate_device(name, 'sources')
+
+    def test_guard_detects_capture_rerouted_into_its_own_microphone(self):
+        sources = [{'index': 1, 'name': 'physical-mic'}, {'index': 2, 'name': audio.MIC_SOURCE}]
+        stream = {'source': 1, 'properties': {'voz_clara.session': 'test', 'voz_clara.role': 'microphone-input'}}
+        expected = {'microphone-input': 'physical-mic'}
+        self.assertEqual(audio.routing_error(sources, [], [stream], [], expected, 'test'), '')
+        stream['source'] = 2
+        self.assertIn('bucle', audio.routing_error(sources, [], [stream], [], expected, 'test'))
+        self.assertEqual(audio.routing_error(sources, [], [stream], [], expected, 'other-session'), '')
+
+    def test_stop_restores_defaults_only_when_ours_are_selected(self):
+        engine = Engine()
+        engine.modules = ['test-module']
+        engine.source, engine.sink = 'physical-mic', 'physical-speaker'
+        engine.previous_defaults = {'source': 'previous-mic', 'sink': 'previous-speaker'}
+        calls = []
+        def server(*args):
+            calls.append(args)
+            if args[0] == 'get-default-source':
+                return audio.MIC_SOURCE
+            if args[0] == 'get-default-sink':
+                return 'user-chose-another-speaker'
+            return ''
+        with patch.object(audio, 'pactl', side_effect=server):
+            engine.stop()
+        self.assertIn(('set-default-source', 'previous-mic'), calls)
+        self.assertFalse(any(call[0] == 'set-default-sink' for call in calls))
+
     def test_null_labels_and_fake_devices(self):
         records = [{'name': 'alsa_input.usb', 'description': None},
             {'name': 'auto_null', 'description': 'Dummy Output'},
