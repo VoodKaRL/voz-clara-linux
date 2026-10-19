@@ -9,7 +9,7 @@ import stat
 import uuid
 import sys
 from pathlib import Path
-from dsp import Processor, Headphones, MicrophoneOutput
+from dsp import Processor, Headphones, MicrophoneOutput, clean_audio
 from noise import NoiseSuppressor
 
 _audio_env = None
@@ -175,6 +175,7 @@ class Engine:
         self.monitor_error = ''
         self.dropped = 0
         self.processing_ms = 0
+        self.input_peak = 0.0
         self.thread = self.speaker_thread = self.guard_thread = None
         self.stopping = False
         self.error = ''
@@ -184,6 +185,7 @@ class Engine:
         self.headphones = Headphones(48000)
         self.fault = threading.Event()
         self.guard_stop = threading.Event()
+        self.mic_stop = threading.Event()
         self.speaker_stop = threading.Event()
         self.expected = {}
         self.previous_defaults = {}
@@ -205,7 +207,7 @@ class Engine:
             'record' if program == 'parec' else 'playback', device,
             str(self.rate), str(self.frames), role, self.session]
 
-    def start(self, source, sink, rate, frames, noise_enabled=False, noise_strength=70):
+    def start(self, source, sink, rate, frames, noise_enabled=False, noise_strength=70, configure=None):
         for command in ('pactl', 'parec', 'pacat'):
             if not shutil.which(command):
                 raise RuntimeError(f'Falta {command}. Repite el instalador de Voz Clara.')
@@ -217,16 +219,24 @@ class Engine:
         self.error = ''
         self.stopping = False
         self.fault.clear()
-        self.guard_stop.clear()
+        # An old guard may still be inside a pactl call during stop(). Never
+        # revive it by clearing the event it is waiting on.
+        self.guard_stop = threading.Event()
+        self.mic_stop = threading.Event()
         self.source, self.sink = source, sink
         self.rate, self.frames = rate, frames
         self.dropped = 0
+        self.input_peak = 0.0
+        self.processing_ms = 0.0
         self.processor = Processor(rate)
         self.safety = MicrophoneOutput(rate)
         self.noise = NoiseSuppressor(rate)
         self.noise.strength = noise_strength
         self.noise.set_enabled(noise_enabled)
         self.headphones = Headphones(rate)
+        # Apply saved gain/mute/EQ before any audio can escape the new engine.
+        if configure is not None:
+            configure()
         self.expected = {'microphone-input': source, 'microphone-output': MIC_BUS,
                          'desktop-input': SPEAKER_SINK+'.monitor', 'hardware-output': sink}
         for kind in ('source', 'sink'):
@@ -244,28 +254,38 @@ class Engine:
             self.modules.append(pactl('load-module', 'module-null-sink', f'sink_name={SPEAKER_SINK}',
                 f'rate={rate}', 'channels=2', 'channel_map=front-left,front-right',
                 'sink_properties=device.description=Voz_Clara_Altavoces'))
+            # Device-restore may remember amplification from an earlier run.
+            # Our microphone ceiling must not be boosted again downstream.
+            pactl('set-sink-volume', MIC_BUS, '100%')
+            pactl('set-source-volume', MIC_SOURCE, '100%')
+            pactl('set-source-volume', MIC_BUS+'.monitor', '100%')
+            pactl('set-sink-mute', MIC_BUS, '0')
+            pactl('set-source-mute', MIC_SOURCE, '0')
             reader = self.open_audio('parec', source, 'microphone-input')
             self.processes.append(reader)
             writer = self.open_audio('pacat', MIC_BUS, 'microphone-output')
             self.processes.append(writer)
-            self.thread = threading.Thread(target=self.run, args=(reader, writer, frames), daemon=True)
+            self.thread = threading.Thread(target=self.run, args=(reader, writer, frames, self.mic_stop), daemon=True)
             self.thread.start()
             self.set_output(sink)
-            self.guard_thread = threading.Thread(target=self.guard_routes, daemon=True)
+            self.guard_thread = threading.Thread(target=self.guard_routes, args=(self.guard_stop,), daemon=True)
             self.guard_thread.start()
         except Exception:
             self.stop()
             raise
 
-    def run(self, reader, writer, frames):
+    def run(self, reader, writer, frames, stop=None):
         import numpy as np
+        stop = self.mic_stop if stop is None else stop
         try:
-            while not self.stopping:
+            while not self.stopping and not stop.is_set():
                 data = read_exact(reader.stdout, frames*8)
                 started = time.perf_counter()
-                clean = self.noise.process(np.frombuffer(data, dtype='<f4').reshape(-1, 2))
+                samples = clean_audio(np.frombuffer(data, dtype='<f4').reshape(-1, 2)).astype('<f4')
+                self.input_peak = float(np.max(np.abs(samples)))
+                clean = self.noise.process(samples)
                 out = self.safety.process(self.processor.process(clean))
-                if self.fault.is_set():
+                if self.fault.is_set() or self.processor.muted:
                     out.fill(0)
                 self.processing_ms = (time.perf_counter()-started)*1000
                 write_all(writer.stdin, out.tobytes())
@@ -284,7 +304,7 @@ class Engine:
                         except queue.Full:
                             pass
         except Exception as exc:
-            if not self.stopping:
+            if not self.stopping and not stop.is_set():
                 self.fault.set()
                 self.error = str(exc)
 
@@ -352,21 +372,31 @@ class Engine:
     def use_as_defaults(self):
         if not self.modules or self.stopping:
             raise RuntimeError('Primero inicia el audio de Voz Clara.')
+        previous_source = pactl('get-default-source')
         pactl('set-default-source', MIC_SOURCE)
         try:
             pactl('set-default-sink', SPEAKER_SINK)
         except Exception:
-            pactl('set-default-source', self.source)
+            pactl('set-default-source', previous_source)
             raise
 
-    def guard_routes(self):
-        while not self.guard_stop.wait(.3):
+    def guard_routes(self, stop=None):
+        stop = self.guard_stop if stop is None else stop
+        while not stop.wait(.3):
             if self.output_switching:
                 continue
             generation = self.output_generation
             try:
                 records = {kind: json.loads(pactl('-f', 'json', 'list', kind))
                     for kind in ('sources', 'sinks', 'source-outputs', 'sink-inputs')}
+                if stop.is_set():
+                    return
+                for kind, name in (('sources', MIC_SOURCE), ('sources', MIC_BUS+'.monitor'), ('sinks', MIC_BUS)):
+                    for device in records[kind]:
+                        if device.get('name') == name and any(
+                                channel.get('value', 0) > 65536
+                                for channel in (device.get('volume') or {}).values()):
+                            pactl('set-'+('source' if kind == 'sources' else 'sink')+'-volume', name, '100%')
                 if self.output_switching or generation != self.output_generation:
                     continue
                 message = routing_error(records['sources'], records['sinks'],
@@ -376,7 +406,7 @@ class Engine:
                     self.error = message
                     return
             except Exception as exc:
-                if not self.guard_stop.is_set():
+                if not stop.is_set():
                     self.fault.set()
                     self.error = f'No se pudo comprobar la ruta de audio: {exc}'
                 return
@@ -405,6 +435,7 @@ class Engine:
 
     def stop(self):
         self.stopping = True
+        self.mic_stop.set()
         self.guard_stop.set()
         self.fault.set()
         self.monitor_queue = None

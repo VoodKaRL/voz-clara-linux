@@ -8,12 +8,39 @@ PA_STREAM_ADJUST_LATENCY = 0x2000
 STREAM_FLAGS = PA_STREAM_DONT_MOVE | PA_STREAM_ADJUST_LATENCY
 
 
+def playback_chunks(fd, frames):
+    """Pipes may split stereo float frames, including through the host bridge."""
+    pending = b''
+    while True:
+        data = os.read(fd, frames*8)
+        if not data:
+            if pending:
+                raise RuntimeError('La reproducción terminó con una muestra incompleta.')
+            return
+        pending += data
+        aligned = len(pending)//8*8
+        if aligned:
+            yield pending[:aligned]
+            pending = pending[aligned:]
+
+
+def buffer_attributes(rate, frames):
+    # Python + subprocess pipes need scheduling headroom, particularly under
+    # load. Keep capture interactive, with three blocks of playback reserve.
+    capture = max(frames, (rate+99)//100)
+    return BufferAttr(0xffffffff, capture*3*8, 0xffffffff, capture*8, capture*8)
+
+
 class SampleSpec(c.Structure):
     _fields_ = [('format', c.c_int), ('rate', c.c_uint32), ('channels', c.c_uint8)]
 
 
 class BufferAttr(c.Structure):
     _fields_ = [(name, c.c_uint32) for name in ('maxlength', 'tlength', 'prebuf', 'minreq', 'fragsize')]
+
+
+class ChannelVolume(c.Structure):
+    _fields_ = [('channels', c.c_uint8), ('values', c.c_uint32*32)]
 
 
 def main(mode, device, rate, frames, role, session):
@@ -82,6 +109,7 @@ def main(mode, device, rate, frames, role, session):
         props = props_new()
         for key, value in {'target.object': device, 'node.dont-move': 'true',
                 'node.dont-reconnect': 'true', 'node.dont-fallback': 'true',
+                'module-stream-restore.id': 'voz-clara-'+role,
                 'media.role': 'filter', 'voz_clara.role': role, 'voz_clara.session': session}.items():
             props_set(props, key.encode(), value.encode())
         spec = SampleSpec(5, rate, 2)  # PA_SAMPLE_FLOAT32LE
@@ -93,17 +121,21 @@ def main(mode, device, rate, frames, role, session):
         stream_data_cb(stream, ready, None)
         # Let PulseAudio prebuffer again after an underrun. prebuf=0 lets the
         # hardware clock overtake the write cursor and can leave playback silent.
-        attrs = BufferAttr(0xffffffff, frames*8, 0xffffffff, max(32, frames//2)*8, frames*8)
+        attrs = buffer_attributes(rate, frames)
         if mode == 'record':
             check(record(stream, device.encode(), c.byref(attrs), STREAM_FLAGS))
         else:
-            check(playback(stream, device.encode(), c.byref(attrs), STREAM_FLAGS, None, None))
+            # Do not inherit an old amplified application volume from the server.
+            volume = ChannelVolume(2, (c.c_uint32*32)(65536, 65536))
+            check(playback(stream, device.encode(), c.byref(attrs),
+                           STREAM_FLAGS | 0x10000, c.byref(volume), None))
         while stream_state(stream) != 2:
             if stream_state(stream) in (3, 4):
                 raise RuntimeError('No se pudo abrir el dispositivo: '+device)
             wait(loop)
     finally:
         unlock(loop)
+    chunks = playback_chunks(0, frames) if mode != 'record' else None
     while True:
         if mode == 'record':
             lock(loop)
@@ -120,8 +152,8 @@ def main(mode, device, rate, frames, role, session):
                 unlock(loop)
             pipe_write(chunk)
         else:
-            chunk = os.read(0, frames*8)
-            if not chunk:
+            chunk = next(chunks, None)
+            if chunk is None:
                 return
             lock(loop)
             try:

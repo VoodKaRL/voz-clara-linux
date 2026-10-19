@@ -1,6 +1,57 @@
 import math
+from collections import deque
 import numpy as np
 from scipy.signal import lfilter
+
+
+def clean_audio(samples):
+    """Keep malformed samples from poisoning recursive filters and meters."""
+    a = np.nan_to_num(np.asarray(samples, dtype=np.float64),
+                      nan=0.0, posinf=0.0, neginf=0.0)
+    return np.clip(a, -1e6, 1e6)
+
+
+class PeakLimiter:
+    """Stereo-linked protection, instantaneous attack and gradual recovery.
+
+    No automatic make-up gain: quiet input is never amplified.
+    """
+    def __init__(self, rate, ceiling=.95, lookahead_ms=0):
+        self.release = math.exp(-1/(.08*rate))
+        self.ceiling = ceiling
+        self.delay_frames = int(rate*lookahead_ms/1000)
+        self.delay = None
+        self.peaks = deque()
+        self.index = 0
+        self.gain = 1.0
+        self.reduction_db = 0.0
+
+    def process(self, samples):
+        a = clean_audio(samples)
+        if not len(a):
+            return a.astype('<f4')
+        peaks = np.abs(a) if a.ndim == 1 else np.max(np.abs(a), axis=1)
+        if self.delay is None:
+            self.delay = np.zeros((self.delay_frames, *a.shape[1:]))
+        delayed = np.concatenate((self.delay, a))
+        self.delay = delayed[len(a):].copy()
+        delayed = delayed[:len(a)]
+        envelope = np.empty(len(a))
+        for i, peak in enumerate(peaks):
+            # Rolling maximum covers the delayed sample and its future. Unlike
+            # per-block gain, this is identical for every caller block size.
+            while self.peaks and self.peaks[-1][1] <= peak:
+                self.peaks.pop()
+            self.peaks.append((self.index, float(peak)))
+            while self.peaks[0][0] < self.index-self.delay_frames:
+                self.peaks.popleft()
+            self.index += 1
+            target = min(1.0, self.ceiling/max(self.peaks[0][1], 1e-12))
+            self.gain = min(target, 1-(1-self.gain)*self.release)
+            envelope[i] = self.gain
+        self.reduction_db = -20*math.log10(max(self.gain, 1e-12))
+        out = delayed*envelope if a.ndim == 1 else delayed*envelope[:, None]
+        return np.clip(out, -self.ceiling, self.ceiling).astype('<f4')
 
 
 class Processor:
@@ -16,12 +67,16 @@ class Processor:
         self.env = 0.0
         self.gate_gain = 0.0
         self.open = False
+        self.hold_remaining = 0
+        self.limiter = PeakLimiter(rate)
         self.low_state = None
         self.high_state = None
         self.input_db = self.output_db = -90.0
 
     def process(self, samples):
-        a = np.asarray(samples, dtype=np.float32)
+        a = clean_audio(samples)
+        if not len(a):
+            return a.astype('<f4')
         flat = a.ndim == 1
         if flat:
             a = a[:, None]
@@ -56,8 +111,12 @@ class Processor:
                 self.open = True
             elif self.env > threshold:
                 self.open = True
+                self.hold_remaining = int(self.rate*.15)
             elif self.env < threshold * .65:
-                self.open = False
+                if self.hold_remaining:
+                    self.hold_remaining -= 1
+                else:
+                    self.open = False
             c = attack if self.open else release
             self.gate_gain = c*self.gate_gain + (1-c)*float(self.open)
             level = 20 * math.log10(max(self.env, 1e-9))
@@ -68,7 +127,7 @@ class Processor:
             envelope[i] = self.gate_gain*self.comp_gain
         out *= envelope[:, None]
         out *= 0 if self.muted else 10 ** (self.gain_db/20)
-        out = np.clip(out, -1, 1).astype('<f4')
+        out = self.limiter.process(out)
         self.output_db = 20 * math.log10(max(float(np.sqrt(np.mean(out*out))), 1e-9))
         return out[:, 0] if flat else out
 
@@ -80,8 +139,14 @@ class MicrophoneOutput:
         self.state = np.zeros((1, 2))
         self.position = 0
         self.fade_frames = max(1, int(rate*.02))
+        # Last stage, AFTER DC removal: the high-pass can itself overshoot.
+        self.limiter = PeakLimiter(rate, ceiling=10**(-1/20), lookahead_ms=5)
+        self.output_db = -90.0
 
     def process(self, samples):
+        samples = clean_audio(samples)
+        if not len(samples):
+            return samples.astype('<f4')
         out, self.state = lfilter([1, -1], [1, -self.pole], samples,
                                   axis=0, zi=self.state)
         if self.position < self.fade_frames:
@@ -89,7 +154,9 @@ class MicrophoneOutput:
                 self.position+len(out), dtype=float)/self.fade_frames)
             out *= ramp[:, None]
             self.position += len(out)
-        return np.clip(out, -1, 1).astype('<f4')
+        out = self.limiter.process(out)
+        self.output_db = 20*math.log10(max(float(np.sqrt(np.mean(out*out))), 1e-9))
+        return out
 
 
 class Headphones:
@@ -104,6 +171,7 @@ class Headphones:
         self.cached = None
         self.coefficients = []
         self.output_db = -90.0
+        self.limiter = PeakLimiter(rate)
 
     def process(self, samples):
         gains = tuple(self.gains)
@@ -117,11 +185,13 @@ class Headphones:
                 a = np.array([1+alpha/amplitude, -2*math.cos(w), 1-alpha/amplitude])
                 self.coefficients.append((b/a[0], a/a[0]))
             self.cached = gains
-        out = np.asarray(samples, dtype=np.float64)
+        out = clean_audio(samples)
+        if not len(out):
+            return np.empty((0, 2), dtype='<f4')
         if out.ndim == 1:
             out = np.repeat(out[:, None], 2, axis=1)
         for i, (b, a) in enumerate(self.coefficients):
             out, self.states[i] = lfilter(b, a, out, axis=0, zi=self.states[i])
-        out = np.clip(out*(0 if self.muted else 10**(self.volume_db/20)), -1, 1).astype('<f4')
+        out = self.limiter.process(out*(0 if self.muted else 10**(self.volume_db/20)))
         self.output_db = 20*math.log10(max(float(np.sqrt(np.mean(out*out))), 1e-9))
         return out

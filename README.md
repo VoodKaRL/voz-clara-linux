@@ -2,7 +2,7 @@
 
 Un mezclador sencillo para transformar tu micrófono y controlar el sonido de Linux. Un micrófono virtual, un altavoz virtual y controles fáciles de mover.
 
-**Versión 0.3.0 · Experimental.** Las pruebas cubren procesamiento, RNNoise y rutas de audio con servidores aislados en Linux. La compatibilidad y la latencia con hardware Bazzite todavía necesitan validación.
+**Versión 0.4.0 · Experimental.** Las pruebas cubren procesamiento, RNNoise y rutas de audio con servidores aislados en Linux. La compatibilidad y la latencia con hardware Bazzite todavía necesitan validación.
 
 ## Qué puedes hacer
 
@@ -72,15 +72,33 @@ La primera ejecución instala las dependencias Python en `.venv`, dentro del pro
 ## Primer uso
 
 1. Selecciona **Escoger micrófono** en el panel izquierdo y **Escoger altavoz / auriculares** en el panel central.
-2. Empieza con **48000 Hz / 128 muestras**. Si hay cortes, aumenta a 256 o 512.
+2. Empieza con **48000 Hz / 512 muestras**. Si hay cortes, aumenta a 1024.
 3. Pulsa **Iniciar audio**.
-4. Pulsa **Usar Voz Clara por defecto**, o elige en Ajustes → Sonido de GNOME: entrada **Voz_Clara_Microfono** y salida **Voz_Clara_Altavoces**. Dentro de Voz Clara conserva seleccionados los dispositivos físicos.
+4. Pulsa **Conectar a mis apps**, o elige en Ajustes → Sonido de GNOME: entrada **Voz_Clara_Microfono** y salida **Voz_Clara_Altavoces**. Dentro de Voz Clara conserva seleccionados los dispositivos físicos.
 5. Pulsa **Oírme: OFF** para pasar a **Oírme: ON** y monitorizar la señal procesada. Es un botón, separado del selector de salida. Usa auriculares. Puedes cambiar de altavoz durante la escucha.
 6. Ajusta gate, compresor, panel de tono y volumen. El EQ de auriculares es independiente.
 
 Para cambiar el micrófono, Hz o búfer, detén y reinicia el audio. Puedes cambiar el altavoz físico durante el funcionamiento. Al cerrar se guardan los controles, se retiran los dispositivos virtuales y se intenta restaurar la entrada/salida anterior si aún estaban seleccionados los de Voz Clara. La app debe permanecer abierta mientras usas sus dispositivos.
 
 Si antes aparecía «null», cierra la app y repite el instalador Bazzite para recibir la corrección. La app prueba la conexión al audio del host y, si hace falta y las utilidades están disponibles en el host, el puente de Distrobox. La misma ruta se usa para enumerar, capturar y reproducir. No presenta una salida ficticia como altavoz: si no ve hardware muestra «Sin micrófonos/altavoces disponibles» y el error correspondiente. Comprueba también que los dispositivos aparezcan en Ajustes → Sonido de GNOME.
+
+## Mezclador y protección de voz
+
+La interfaz separa **Micrófono**, **Escritorio y auriculares** y **Rutas y protección**. Los ajustes de frecuencia, búfer y recuperación están en **Motor y ayuda**. Los medidores de canal muestran nivel RMS; las barras de reducción indican cuándo actúan los limitadores.
+
+El micrófono tiene una protección final siempre activa, con techo seleccionable de **−12 a −1 dBFS**. Se aplica después de eliminar la componente continua, usa 5 ms de anticipación y no aumenta automáticamente la ganancia del ruido. El techo limita las muestras digitales a la salida de la app; no reconstruye una captura ya distorsionada ni garantiza los picos entre muestras de un DAC o la ganancia que aplique otra app después.
+
+**Aplicar voz protegida** prepara compresor 3/10, techo −3 dBFS, 48 kHz / 512 muestras, gate desactivado, EQ plano, voz a 0 dB, salida a −6 dB y escucha/supresión OFF. Detiene el motor para aplicar el conjunto; después pulsa **Iniciar audio**. El techo queda guardado para la próxima sesión.
+
+Se restablecen a ganancia unitaria los endpoints internos del micrófono para evitar una amplificación restaurada por el servidor. El vigilante corrige posteriores subidas sobre el 100 % de esos endpoints; no controla el volumen que una aplicación receptora añada por su cuenta ni modifica el micrófono físico.
+
+## Saturación, cortes y eco
+
+Pulsa **Restablecer audio seguro · sin escucha** para detener el motor y preparar 48 kHz / 512 muestras, gate desactivado, tono y EQ planos, supresión OFF y ganancias de −6 dB. Después pulsa **Iniciar audio**. Este botón conserva tus dispositivos y sustituye los controles de procesamiento; se guardan al cerrar.
+
+Mantén **Oírme OFF** para no reproducir una copia retardada de tu voz. Con auriculares evitas que el sonido del altavoz vuelva acústicamente al micrófono. Desactiva también la monitorización de micrófono de OBS/Discord si está activa. Esta versión no incorpora cancelación de eco acústico ni controla la escucha directa del hardware.
+
+Los limitadores del micrófono y de la salida reducen los picos sin aumentar el ruido entre frases. El indicador de protección muestra la reducción aplicada. Si aparece la advertencia **Entrada cerca de saturar**, baja la ganancia del micrófono o el volumen de entrada de Linux: una señal que ya llega distorsionada no se puede reconstruir con el volumen de la app. Si sigue habiendo cortes, prueba 1024 muestras. Más reserva mejora la tolerancia a carga a costa de más latencia, especialmente audible si activas Oírme.
 
 ## Supresión de ruido
 
@@ -93,7 +111,7 @@ Es un filtro de voz local basado en [RNNoise de Xiph](https://github.com/xiph/rn
 
 RNNoise trabaja en bloques de 10 ms. El modelo incluido tiene 20 ms de retardo, verificados por correlación en las pruebas; con la adaptación de bloques, la ruta activada añade aproximadamente 30 ms al micrófono, además del resto de latencias del sistema. La señal original de la mezcla se retrasa lo mismo para evitar coloración por desalineación. Reduce la potencia si percibes voz artificial o pérdida de consonantes; la calidad depende del ruido y el micrófono. No elimina todo tipo de sonidos ni sustituye una buena colocación del micrófono.
 
-Orden de micrófono: supresión opcional → controles de voz existentes (tono, gate, compresor, ganancia) → protección contra componente continua y arranque suave → micrófono virtual. **El gate y el panel de tono conservan su algoritmo.**
+Orden de micrófono: supresión opcional → controles de voz existentes (tono, gate, compresor, ganancia) → protección contra componente continua y arranque suave → limitador final con anticipación → micrófono virtual. El gate mantiene la apertura durante pausas breves de 150 ms para no cortar sílabas suaves. El tono conserva su algoritmo; un limitador de picos evita el recorte duro después de la ganancia.
 
 ## Rutas sin realimentación
 
@@ -117,11 +135,11 @@ Si lo descargaste como ZIP, descarga la nueva versión y descomprímela en una c
 
 ## Sobre el tiempo real
 
-La app procesa bloques continuamente, sin grabar para reproducir después. El audio del escritorio y la escucha opcional de voz se mezclan antes del EQ de salida, con estados de filtro únicos. La cola de escucha se limita a dos bloques para evitar acumular retraso. La supresión de ruido añade el retardo indicado arriba cuando está activada.
+La app procesa bloques continuamente, sin grabar para reproducir después. El audio del escritorio y la escucha opcional de voz se mezclan antes del EQ de salida, con estados de filtro únicos. La cola de escucha se limita a dos bloques para evitar acumular retraso. Cada flujo solicita al menos 10 ms de captura y tres bloques de reserva de reproducción; el servidor puede adaptar esos valores. La supresión de ruido añade el retardo indicado arriba cuando está activada. El limitador final del micrófono añade siempre otros 5 ms.
 
 **128 muestras a 48000 Hz son 2,67 ms por bloque, no 2,67 ms de latencia total.** El dispositivo, el servidor de audio y la aplicación receptora añaden retraso. No se garantiza latencia cero ni funcionamiento de tiempo real estricto. Para medir la latencia completa hace falta una prueba de retorno físico en Linux. Usa auriculares por cable o USB para reducir el retraso de monitorización.
 
-La interfaz muestra tiempo de DSP por bloque y descartes de la cola de escucha. Si el procesamiento supera el tiempo disponible por bloque o escuchas cortes, aumenta el búfer. Estos indicadores no son una medición de latencia de extremo a extremo.
+La interfaz muestra tiempo de DSP por bloque y descartes de la cola de escucha. Si el procesamiento supera el tiempo disponible por bloque o escuchas cortes, aumenta el búfer a 512 o 1024. Estos indicadores no son una medición de latencia de extremo a extremo.
 
 ## Desarrollo y pruebas
 

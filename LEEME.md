@@ -1,6 +1,6 @@
 # Voz Clara Linux — manual
 
-Versión 0.3.0. Una entrada física, un micrófono virtual y un altavoz virtual. El código es experimental: las pruebas automáticas no sustituyen la medición con tu hardware.
+Versión 0.4.0. Una entrada física, un micrófono virtual y un altavoz virtual. El código es experimental: las pruebas automáticas no sustituyen la medición con tu hardware.
 
 ## Instalar y actualizar
 
@@ -11,9 +11,9 @@ Las instrucciones manuales para Ubuntu/Debian, Fedora y Arch también están en 
 ## Conectar los dispositivos
 
 1. Dentro de Voz Clara elige el micrófono físico y el altavoz/auriculares físicos. Nunca selecciones un dispositivo de Voz Clara como su propia entrada o salida física.
-2. Empieza con 48000 Hz / 128 muestras; si hay cortes, prueba 256 o 512.
+2. Empieza con 48000 Hz / 512 muestras; si hay cortes, prueba 1024.
 3. Pulsa Iniciar audio.
-4. Pulsa Usar Voz Clara por defecto, o selecciona en GNOME entrada **Voz_Clara_Microfono** y salida **Voz_Clara_Altavoces**.
+4. Pulsa Conectar a mis apps, o selecciona en GNOME entrada **Voz_Clara_Microfono** y salida **Voz_Clara_Altavoces**.
 5. Enciende Oírme si deseas escuchar tu propia voz. OFF retira solo tu voz; el audio del escritorio sigue sonando.
 
 El EQ de cinco bandas y el volumen de salida afectan al escritorio enviado al altavoz virtual y a la escucha de tu voz. No afectan al micrófono virtual. Si una aplicación tiene seleccionada directamente la salida física, su sonido evita el EQ.
@@ -28,7 +28,7 @@ La app debe permanecer abierta. Al detenerla se retiran los dispositivos virtual
 - **Mono:** promedia izquierdo y derecho y coloca la misma voz en ambos canales. Desactivado conserva estéreo.
 - **Volumen y silencio del micrófono:** solo afectan al micrófono virtual y a su escucha.
 
-El gate y el panel de tono mantienen su procesamiento de las versiones anteriores. Se añade protección de componente continua y un arranque suave al final de la ruta del micrófono.
+El gate añade 150 ms de mantenimiento para preservar pausas breves de voz. El tono conserva su procesamiento y se añade un limitador de picos después de la ganancia. Se añade protección de componente continua y un arranque suave al final de la ruta del micrófono.
 
 ## Supresión de ruido de fondo
 
@@ -63,3 +63,7 @@ Con las dependencias instaladas:
 ```
 
 La prueba de servidores de audio está aislada y se activa expresamente en CI con VOZ_CLARA_AUDIO_TEST=1. Usa dispositivos sintéticos y no prueba hardware real. Consulta [THIRD_PARTY.md](THIRD_PARTY.md) para los componentes de terceros.
+
+## Mezclador 0.4.0
+
+En Rutas y protección puedes fijar el techo final del micrófono entre −12 y −1 dBFS; siempre permanece activo y añade 5 ms de anticipación. «Aplicar voz protegida» prepara compresión suave, techo −3 dBFS y escucha apagada. Frecuencia, búfer y restablecimiento están en Motor y ayuda. El techo actúa después del filtro de componente continua y no puede recuperar una captura que ya llegue distorsionada.
