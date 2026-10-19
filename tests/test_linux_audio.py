@@ -23,12 +23,29 @@ class LinuxAudioTests(unittest.TestCase):
         cls.runtime = Path(cls.temp.name)
         cls.runtime.chmod(0o700)
         cls.env = dict(os.environ, XDG_RUNTIME_DIR=str(cls.runtime),
+            XDG_CONFIG_HOME=str(cls.runtime / 'config'),
+            XDG_STATE_HOME=str(cls.runtime / 'state'),
+            XDG_CACHE_HOME=str(cls.runtime / 'cache'),
             PULSE_SERVER='unix:'+str(cls.runtime / 'pulse/native'))
         cls.log = (cls.runtime / 'server.log').open('wb')
         cls.server = None
         cls.addClassCleanup(cls.shutdown)
         backend = os.environ.get('VOZ_CLARA_TEST_BACKEND', 'pulseaudio')
         if backend == 'pipewire':
+            # A separate socket alone doesn't isolate hardware or saved policy.
+            # Disable discovery for both WirePlumber 0.5 and the older 0.4 CI.
+            wp = cls.runtime / 'config/wireplumber'
+            fragment = wp / 'wireplumber.conf.d/90-no-hardware.conf'
+            fragment.parent.mkdir(parents=True)
+            fragment.write_text('wireplumber.profiles = { main = {\n'
+                'monitor.alsa = disabled\nmonitor.alsa-midi = disabled\n'
+                'monitor.bluez = disabled\nmonitor.bluez-midi = disabled\n'
+                'monitor.v4l2 = disabled\nmonitor.libcamera = disabled\n} }\n')
+            for directory, names in (('main.lua.d', ('alsa_monitor', 'v4l2_monitor', 'libcamera_monitor')),
+                                     ('bluetooth.lua.d', ('bluez_monitor',))):
+                legacy = wp / directory / '90-no-hardware.lua'
+                legacy.parent.mkdir(parents=True)
+                legacy.write_text('\n'.join(f'if {name} then {name}.enabled = false end' for name in names))
             command = ['dbus-run-session', '--', 'sh', '-c', 'pipewire & pipewire-pulse & wireplumber & wait']
         else:
             (cls.runtime / 'pulse').mkdir()
@@ -114,7 +131,7 @@ class LinuxAudioTests(unittest.TestCase):
         self.addCleanup(stop)
         return stop
 
-    def record(self, source, duration=3):
+    def record(self, source, duration=3, full=False):
         path = self.runtime / ('record-'+str(time.monotonic_ns())+'.raw')
         with path.open('wb') as output:
             process = subprocess.Popen(['parec', f'--device={source}', *audio.stream_args(48000, 256)],
@@ -129,7 +146,35 @@ class LinuxAudioTests(unittest.TestCase):
             'La ruta no entregó audio a tiempo: '+detail+'; motor: '+self.engine.error+
             '; servidor: '+(self.runtime / 'server.log').read_text(errors='replace'))
         self.assertTrue(np.isfinite(samples).all())
-        return samples[-4800:]
+        return samples if full else samples[-4800:]
+
+    def test_jitter_and_peak_protection_without_voice_monitoring(self):
+        process = self.engine.processor.process
+        calls = 0
+        def jittered(samples):
+            nonlocal calls
+            calls += 1
+            if calls % 7 == 0:
+                time.sleep(.012)
+            return process(samples)
+        self.engine.processor.process = jittered
+        self.engine.processor.gain_db = 12
+        self.engine.headphones.gains = (12, 12, 12, 12, 12)
+        self.engine.headphones.volume_db = 12
+        self.tone('test_feed', 220)
+        self.tone(audio.SPEAKER_SINK, 1000)
+        time.sleep(.5)
+        for source in (audio.MIC_SOURCE, 'test_speaker.monitor'):
+            samples = self.record(source, duration=3, full=True)
+            # Ignore startup; sustained 100 ms holes must not be hidden by
+            # looking only at the last block of an otherwise broken stream.
+            stable = samples[48000:]
+            windows = len(stable)//4800
+            self.assertGreater(windows, 5)
+            rms = [float(np.std(w)) for w in np.split(stable[:windows*4800], windows)]
+            self.assertGreater(min(rms), .002, 'Corte sostenido durante la prueba de jitter')
+            self.assertLessEqual(float(np.max(np.abs(stable))), .951)
+        self.assertFalse(self.engine.error, self.engine.error)
 
     def test_desktop_eq_monitor_and_default_switch_have_separate_routes(self):
         self.engine.use_as_defaults()

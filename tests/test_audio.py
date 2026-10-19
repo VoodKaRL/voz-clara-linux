@@ -21,6 +21,70 @@ class PartialWriter(io.BytesIO):
 
 
 class RoutingTests(unittest.TestCase):
+    def test_virtual_microphone_amplification_is_capped_without_touching_hardware(self):
+        engine = Engine()
+        records = {
+            'sources': [{'name': name, 'volume': {'left': {'value': 99000}}}
+                        for name in (audio.MIC_SOURCE, audio.MIC_BUS+'.monitor', 'physical-mic')],
+            'sinks': [{'name': audio.MIC_BUS, 'volume': {'left': {'value': 99000}}}],
+            'source-outputs': [], 'sink-inputs': []}
+        calls = []
+        def server(*args):
+            calls.append(args)
+            return json.dumps(records[args[-1]]) if args[0] == '-f' else ''
+        with patch.object(engine.guard_stop, 'wait', side_effect=[False, True]), \
+                patch.object(audio, 'pactl', side_effect=server):
+            engine.guard_routes()
+        self.assertIn(('set-source-volume', audio.MIC_SOURCE, '100%'), calls)
+        self.assertIn(('set-source-volume', audio.MIC_BUS+'.monitor', '100%'), calls)
+        self.assertIn(('set-sink-volume', audio.MIC_BUS, '100%'), calls)
+        self.assertFalse(any('physical-mic' in call for call in calls))
+
+    def test_stopped_guard_cannot_fail_a_new_session(self):
+        engine = Engine()
+        old_stop = engine.guard_stop
+        def server(*args):
+            old_stop.set()
+            engine.guard_stop = __import__('threading').Event()
+            return '[]'
+        with patch.object(old_stop, 'wait', return_value=False), \
+                patch.object(audio, 'pactl', side_effect=server):
+            engine.guard_routes(old_stop)
+        self.assertFalse(engine.fault.is_set())
+        self.assertEqual(engine.error, '')
+
+    def test_bad_capture_is_cleaned_before_noise_processing(self):
+        engine = Engine()
+        samples = np.full((128, 2), .1, dtype='<f4')
+        samples[0] = [np.nan, np.inf]
+        reader = SimpleNamespace(stdout=io.BytesIO(samples.tobytes()))
+        output = io.BytesIO()
+        def clean_noise(a):
+            self.assertTrue(np.isfinite(a).all())
+            return a
+        with patch.object(engine.noise, 'process', side_effect=clean_noise) as noise:
+            engine.run(reader, SimpleNamespace(stdin=output), 128)
+        self.assertEqual(noise.call_count, 1)
+        self.assertTrue(np.isfinite(engine.input_peak))
+        self.assertTrue(np.isfinite(np.frombuffer(output.getvalue(), dtype='<f4')).all())
+
+    def test_failed_default_sink_restores_actual_previous_source(self):
+        engine = Engine()
+        engine.modules = ['test']
+        engine.source = 'selected-physical-mic'
+        calls = []
+        def server(*args):
+            calls.append(args)
+            if args[0] == 'get-default-source':
+                return 'users-other-mic'
+            if args[0] == 'set-default-sink':
+                raise RuntimeError('sink unavailable')
+            return ''
+        with patch.object(audio, 'pactl', side_effect=server):
+            with self.assertRaisesRegex(RuntimeError, 'sink unavailable'):
+                engine.use_as_defaults()
+        self.assertEqual(calls[-1], ('set-default-source', 'users-other-mic'))
+
     def test_system_audio_passes_with_monitor_off(self):
         engine = Engine()
         engine.headphones.volume_db = 0
