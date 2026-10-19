@@ -136,13 +136,20 @@ class LinuxAudioTests(unittest.TestCase):
         with path.open('wb') as output:
             process = subprocess.Popen(['parec', f'--device={source}', *audio.stream_args(48000, 256)],
                 stdout=output, stderr=subprocess.PIPE, env=self.env)
-            time.sleep(duration)
+            # PulseAudio may negotiate/start a new monitor capture late. Test
+            # an actual duration of samples, not wall time since Popen().
+            required_frames = int(duration*48000)
+            deadline = time.monotonic()+duration+5
+            while path.stat().st_size < required_frames*8 and time.monotonic() < deadline:
+                if process.poll() is not None:
+                    break
+                time.sleep(.05)
             audio.Engine.terminate(process)
             detail = process.stderr.read().decode(errors='replace')
             process.stderr.close()
         raw = path.read_bytes()
         samples = np.frombuffer(raw[:len(raw)//8*8], dtype='<f4').reshape(-1, 2)
-        self.assertGreater(len(samples), 4800,
+        self.assertGreaterEqual(len(samples), required_frames,
             'La ruta no entregó audio a tiempo: '+detail+'; motor: '+self.engine.error+
             '; servidor: '+(self.runtime / 'server.log').read_text(errors='replace'))
         self.assertTrue(np.isfinite(samples).all())
